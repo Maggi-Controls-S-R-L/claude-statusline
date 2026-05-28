@@ -242,3 +242,19 @@ class TestMain:
         assert "3h 12m" in out
         assert "5h" in out
         assert "7d" in out
+
+
+# ── --version flag ─────────────────────────────────────────────────────────
+class TestVersionFlag:
+    def test_version_flag_prints_version_and_skips_stdin(self, monkeypatch, capsys):
+        # No stdin is set: --version must short-circuit before reading it.
+        monkeypatch.setattr(sys, "argv", ["claude-statusline", "--version"])
+        statusline.main()
+        out = capsys.readouterr().out
+        assert "claude-statusline" in out
+        assert statusline.__version__ in out
+
+    def test_short_version_flag(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["claude-statusline", "-V"])
+        statusline.main()
+        assert statusline.__version__ in capsys.readouterr().out

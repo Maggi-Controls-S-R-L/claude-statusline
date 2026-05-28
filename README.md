@@ -50,6 +50,8 @@ which is why the cost is explicitly labelled as an estimate.
 pipx install git+https://github.com/Maggi-Controls-S-R-L/claude-statusline
 ```
 
+Verify the install with `claude-statusline --version`.
+
 Then point the `statusLine` command in `~/.claude/settings.json` at the
 installed entry point:
 

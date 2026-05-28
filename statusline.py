@@ -16,6 +16,8 @@ import json
 import sys
 import time
 
+__version__ = "1.0.0"
+
 # ── ANSI codes ──────────────────────────────────────────────────────────────
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -91,6 +93,10 @@ def human_tokens(n: float) -> str:
 
 
 def main() -> None:
+    if "--version" in sys.argv[1:] or "-V" in sys.argv[1:]:
+        print(f"claude-statusline {__version__}")
+        return
+
     # Force UTF-8 output: the bar uses block characters the default
     # Windows console encoding (cp1252) cannot encode, which would crash
     # `print` and produce no status line at all.

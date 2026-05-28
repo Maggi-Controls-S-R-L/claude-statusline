@@ -75,6 +75,29 @@ Clone the repository and reference `statusline.py` by its absolute path:
 }
 ```
 
+### Tip — keep time-based fields live while idle
+
+By default Claude Code re-runs the status line only on events (a new message,
+`/compact`, a permission change). The session duration and the reset
+countdowns therefore freeze whenever the session sits idle. Add the optional
+`refreshInterval` field to also re-run the command on a fixed timer:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "claude-statusline",
+    "refreshInterval": 60
+  }
+}
+```
+
+`60` (seconds) is the sweet spot: the finest field shown is the session
+duration in whole minutes, so refreshing more often just redraws identical
+output, while refreshing less often lets the minute counter lag. The script is
+pure standard library with no subprocess calls, so a once-a-minute refresh is
+negligible.
+
 ## Status line schema
 
 The script reads the JSON object Claude Code writes to stdin, documented at

@@ -26,6 +26,29 @@ mypy statusline.py
 pytest
 ```
 
+## Branching & pull requests
+
+We use a lightweight [GitHub Flow](https://docs.github.com/get-started/using-github/github-flow):
+
+- `main` is always releasable and is **protected** — no direct pushes.
+- Do every change on a short-lived branch (`feat/...`, `fix/...`, `docs/...`,
+  `chore/...`).
+- Open a **pull request** into `main`. CI (lint, typecheck, tests on
+  3.10–3.13) must pass before the PR can merge.
+- Squash-merge into `main` and delete the branch.
+
+```sh
+git checkout -b fix/short-description
+# ...work, commit...
+git push -u origin fix/short-description
+gh pr create --fill
+# once CI is green:
+gh pr merge --squash --delete-branch
+```
+
+Tags are not branches, so the release script (which pushes a `vX.Y.Z` tag) is
+unaffected by the `main` protection.
+
 ## Versioning
 
 We follow [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
@@ -51,9 +74,10 @@ package changes.
 A release is cut from a green `main`. Steps:
 
 1. Decide the next version per the table above.
-2. Bump `__version__` in `statusline.py`.
-3. Commit it, e.g. `chore(release): v1.1.0`, and push to `main`.
-4. Wait for CI to go green on that commit.
+2. On a branch, bump `__version__` in `statusline.py` (e.g. commit
+   `chore(release): v1.1.0`).
+3. Open a PR, let CI pass, and squash-merge it into `main`.
+4. Wait for CI to go green on `main`.
 5. From the venv, run the release script:
 
    ```sh

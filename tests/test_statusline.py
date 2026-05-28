@@ -184,7 +184,9 @@ class TestMain:
         assert exc.value.code == 0
 
     def test_none_percentages(self, monkeypatch, capsys):
-        payload = b'{"context_window":{"used_percentage":null},"model":{"display_name":"M"}}'
+        payload = (
+            b'{"context_window":{"used_percentage":null},"model":{"display_name":"M"}}'
+        )
         out = run_main(monkeypatch, capsys, payload)
         assert "no messages yet" in out
         assert "no rate-limit / cost data" in out
@@ -212,8 +214,8 @@ class TestMain:
         monkeypatch.setattr(statusline.time, "time", lambda: 1_000_000.0)
         resets = 1_000_000 + 7200  # +2.0h
         payload = (
-            '{"rate_limits":{"five_hour":{"used_percentage":35,"resets_at":%d}},'
-            '"model":{"display_name":"M"}}' % resets
+            f'{{"rate_limits":{{"five_hour":{{"used_percentage":35,"resets_at":{resets}}}}},'
+            '"model":{"display_name":"M"}}'
         ).encode()
         out = run_main(monkeypatch, capsys, payload)
         assert "↻ 2.0h" in out

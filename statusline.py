@@ -11,6 +11,7 @@ subscription. It is labelled "API est." to make that explicit — for a
 subscriber the rate-limit percentages are the meaningful budget signal.
 """
 
+import contextlib
 import json
 import sys
 import time
@@ -58,7 +59,7 @@ def format_duration(ms: float) -> str:
     return f"{mins}m"
 
 
-def reset_in(epoch_secs: float, now: float) -> str:
+def reset_in(epoch_secs: float | None, now: float) -> str:
     """Indicative time left until a rate-limit window resets.
 
     Uses a single largest unit with one decimal: '5.0d', '2.8h' or '47m'.
@@ -93,10 +94,8 @@ def main() -> None:
     # Force UTF-8 output: the bar uses block characters the default
     # Windows console encoding (cp1252) cannot encode, which would crash
     # `print` and produce no status line at all.
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, ValueError):
-        pass
+    with contextlib.suppress(AttributeError, ValueError):
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
     # Read stdin as raw bytes and decode with utf-8-sig so a leading BOM
     # (some shells add one when piping) does not break the JSON parse.
@@ -164,19 +163,14 @@ def main() -> None:
             part += f" {DIM}(↻ {rem}){RESET}"
         parts.append(part)
     if cost_raw is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             parts.append(
                 f"{DIM}API est.{RESET} {MAGENTA}${float(cost_raw):,.2f}{RESET}"
             )
-        except (TypeError, ValueError):
-            pass
     if duration_ms is not None:
-        try:
-            parts.append(
-                f"{DIM}session{RESET} {BOLD}{format_duration(float(duration_ms))}{RESET}"
-            )
-        except (TypeError, ValueError):
-            pass
+        with contextlib.suppress(TypeError, ValueError):
+            dur = format_duration(float(duration_ms))
+            parts.append(f"{DIM}session{RESET} {BOLD}{dur}{RESET}")
     line2 = SEP.join(parts) if parts else f"{DIM}(no rate-limit / cost data){RESET}"
 
     print(line1)

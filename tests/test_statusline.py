@@ -1,6 +1,7 @@
 """Tests for the pure helpers and the stdin/stdout edge cases of statusline.py."""
 
 import io
+import re
 import sys
 
 import pytest
@@ -242,6 +243,95 @@ class TestMain:
         assert "3h 12m" in out
         assert "5h" in out
         assert "7d" in out
+
+
+# ── main() — session duration placement (issue #2) ───────────────────────
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def run_lines(monkeypatch, capsys, raw: bytes) -> tuple[str, str]:
+    """Run main() and return its two output lines with ANSI codes stripped."""
+    out = run_main(monkeypatch, capsys, raw)
+    lines = _ANSI_RE.sub("", out).splitlines()
+    assert len(lines) == 2
+    return lines[0], lines[1]
+
+
+class TestSessionPlacement:
+    FULL = (
+        b'{"context_window":{"total_input_tokens":48000,"context_window_size":200000},'
+        b'"model":{"display_name":"Claude Opus 4.7"},'
+        b'"rate_limits":{"five_hour":{"used_percentage":35,"resets_at":7200},'
+        b'"seven_day":{"used_percentage":70,"resets_at":440640}},'
+        b'"cost":{"total_cost_usd":12.34,"total_duration_ms":11520000}}'
+    )
+
+    def test_full_payload_layout(self, monkeypatch, capsys):
+        monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+        line1, line2 = run_lines(monkeypatch, capsys, self.FULL)
+        assert line1 == (
+            "ctx " + "█" * 6 + "░" * 18 + " 24% (48k/200k)"
+            "  ·  session 3h 12m  ·  Claude Opus 4.7"
+        )
+        assert line2 == "5h 35% (↻ 2.0h)  ·  7d 70% (↻ 5.1d)  ·  API est. $12.34"
+
+    def test_session_sits_between_context_and_model(self, monkeypatch, capsys):
+        monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+        line1, _ = run_lines(monkeypatch, capsys, self.FULL)
+        assert line1.index("ctx") < line1.index("session") < line1.index("Claude")
+
+    def test_session_not_on_line_2(self, monkeypatch, capsys):
+        monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+        _, line2 = run_lines(monkeypatch, capsys, self.FULL)
+        assert "session" not in line2
+        assert "3h 12m" not in line2
+
+    def test_session_keeps_dim_label_and_bold_value(self, monkeypatch, capsys):
+        payload = (
+            b'{"cost":{"total_duration_ms":11520000},"model":{"display_name":"M"}}'
+        )
+        out = run_main(monkeypatch, capsys, payload)
+        line1 = out.splitlines()[0]
+        dim, bold, reset = statusline.DIM, statusline.BOLD, statusline.RESET
+        assert f"{dim}session{reset} {bold}3h 12m{reset}" in line1
+
+    def test_pre_first_turn(self, monkeypatch, capsys):
+        # Before the first turn Claude Code already sends total_duration_ms.
+        payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":0}}'
+        line1, line2 = run_lines(monkeypatch, capsys, payload)
+        assert line1 == "ctx (no messages yet)  ·  session 0m  ·  M"
+        assert line2 == "(no rate-limit / cost data)"
+
+    def test_missing_duration_omits_segment(self, monkeypatch, capsys):
+        payload = b'{"model":{"display_name":"M"},"cost":{"total_cost_usd":1.5}}'
+        line1, line2 = run_lines(monkeypatch, capsys, payload)
+        assert line1 == "ctx (no messages yet)  ·  M"
+        assert line2 == "API est. $1.50"
+
+    def test_missing_cost_object_omits_segment(self, monkeypatch, capsys):
+        payload = b'{"model":{"display_name":"M"}}'
+        line1, _ = run_lines(monkeypatch, capsys, payload)
+        assert line1 == "ctx (no messages yet)  ·  M"
+
+    def test_null_duration_omits_segment(self, monkeypatch, capsys):
+        payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":null}}'
+        line1, _ = run_lines(monkeypatch, capsys, payload)
+        assert line1 == "ctx (no messages yet)  ·  M"
+
+    def test_non_numeric_duration_is_ignored(self, monkeypatch, capsys):
+        payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":"oops"}}'
+        line1, line2 = run_lines(monkeypatch, capsys, payload)
+        assert line1 == "ctx (no messages yet)  ·  M"
+        assert "session" not in line2
+
+    def test_line_2_fallback_when_only_duration_present(self, monkeypatch, capsys):
+        payload = (
+            b'{"context_window":{"used_percentage":50},'
+            b'"model":{"display_name":"M"},"cost":{"total_duration_ms":300000}}'
+        )
+        line1, line2 = run_lines(monkeypatch, capsys, payload)
+        assert line1.endswith("50%  ·  session 5m  ·  M")
+        assert line2 == "(no rate-limit / cost data)"
 
 
 # ── --version flag ─────────────────────────────────────────────────────────

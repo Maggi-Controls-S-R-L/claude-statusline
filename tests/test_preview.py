@@ -67,7 +67,7 @@ class TestOn:
     def test_command_uses_running_interpreter_quoted(self, preview, root):
         preview.main(["on"], root=root)
         command = read_json(root)["statusLine"]["command"]
-        python = Path(sys.executable).resolve().as_posix()
+        python = Path(sys.executable).absolute().as_posix()
         assert command == f'"{python}" "{script_path(root)}"'
 
     def test_refresh_interval(self, preview, root):

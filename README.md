@@ -9,21 +9,21 @@ for Claude Code. Claude Code pipes a JSON status payload to the configured
 command on stdin; this script renders it as:
 
 ```
-ctx ██████░░░░░░░░░░░░░░░░░░ 24% (48k/200k)  ·  Claude Opus 4.7
-5h 35% (↻ 2.0h)  ·  7d 70% (↻ 5.1d)  ·  API est. $12.34  ·  session 3h 12m
+ctx ██████░░░░░░░░░░░░░░░░░░ 24% (48k/200k)  ·  session 3h 12m  ·  Claude Opus 4.7
+5h 35% (↻ 2.0h)  ·  7d 70% (↻ 5.1d)  ·  API est. $12.34
 ```
 
 ## Features
 
 - **Context-window bar** that turns green → yellow → red as usage climbs, with
   compact token counts (`48k/200k`).
-- **Active model** name.
+- **Session wall-clock duration** and the **active model** name.
 - **Rate-limit usage** for the rolling 5-hour and 7-day windows, each with the
   time remaining until it resets.
-- **API-equivalent cost estimate** and **session wall-clock duration**.
+- **API-equivalent cost estimate**.
 - **Graceful degradation** — sections are omitted when their data is absent
   (rate limits only appear for Pro/Max subscribers; the context line shows
-  `ctx (no messages yet)` before the first turn).
+  `ctx (no messages yet)  ·  session 0m  ·  <model>` before the first turn).
 - **UTF-8 / BOM-safe** — forces UTF-8 output (the bar uses block characters the
   default Windows console encoding cannot encode) and tolerates a leading BOM
   on stdin.
@@ -31,9 +31,14 @@ ctx ██████░░░░░░░░░░░░░░░░░░ 24%
 
 ## What it shows
 
-- **Line 1** — context-window usage (bar + %, with token counts) and the active model.
-- **Line 2** — rate-limit usage (5h / 7d, with reset countdowns), the cost
-  estimate, and the session duration.
+Fields are grouped by topic:
+
+- **Line 1 — the session:** context-window usage (bar + %, with token counts),
+  the session duration, and the active model. The session segment is omitted
+  when `cost.total_duration_ms` is absent.
+- **Line 2 — the budget:** rate-limit usage (5h / 7d, with reset countdowns)
+  and the API-equivalent cost estimate. When none of these are available it
+  reads `(no rate-limit / cost data)`.
 
 ## About the cost figure
 
@@ -127,9 +132,10 @@ mypy statusline.py
 ## Testing
 
 The project uses **pytest**. The suite covers the pure formatting helpers
-(`make_bar`, `format_duration`, `reset_in`, `human_tokens`, `color_for_pct`)
-and the stdin/stdout edge cases of `main()` (BOM input, missing or past
-`resets_at`, `None` percentages, invalid JSON):
+(`make_bar`, `format_duration`, `reset_in`, `human_tokens`, `color_for_pct`),
+the stdin/stdout edge cases of `main()` (BOM input, missing or past
+`resets_at`, `None` percentages, invalid JSON), and the placement of each
+segment on the two lines:
 
 ```sh
 pytest

@@ -2,7 +2,7 @@
 """
 Claude Code status line — two compact lines.
 
-Line 1:  context-window usage (bar + %)   ·   model name
+Line 1:  context-window usage (bar + %)   ·   session duration   ·   model name
 Line 2:  rate-limit usage (5h / 7d)        ·   estimated API cost
 
 The cost shown is `cost.total_cost_usd`: the client-side *pay-as-you-go
@@ -16,7 +16,7 @@ import json
 import sys
 import time
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ── ANSI codes ──────────────────────────────────────────────────────────────
 RESET = "\033[0m"
@@ -136,7 +136,7 @@ def main() -> None:
     cost_raw = cost.get("total_cost_usd")
     duration_ms = cost.get("total_duration_ms")
 
-    # ── Line 1: context + model ──────────────────────────────────────────────
+    # ── Line 1: context + session duration + model ───────────────────────────
     if used_pct is not None:
         c = color_for_pct(used_pct)
         ctx = (
@@ -150,7 +150,13 @@ def main() -> None:
             ctx += f" {DIM}({size}){RESET}"
     else:
         ctx = f"{DIM}ctx (no messages yet){RESET}"
-    line1 = ctx + SEP + f"{CYAN}{BOLD}{model}{RESET}"
+    line1_parts = [ctx]
+    if duration_ms is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            dur = format_duration(float(duration_ms))
+            line1_parts.append(f"{DIM}session{RESET} {BOLD}{dur}{RESET}")
+    line1_parts.append(f"{CYAN}{BOLD}{model}{RESET}")
+    line1 = SEP.join(line1_parts)
 
     # ── Line 2: rate limits + estimated cost ─────────────────────────────────
     parts = []
@@ -173,10 +179,6 @@ def main() -> None:
             parts.append(
                 f"{DIM}API est.{RESET} {MAGENTA}${float(cost_raw):,.2f}{RESET}"
             )
-    if duration_ms is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            dur = format_duration(float(duration_ms))
-            parts.append(f"{DIM}session{RESET} {BOLD}{dur}{RESET}")
     line2 = SEP.join(parts) if parts else f"{DIM}(no rate-limit / cost data){RESET}"
 
     print(line1)

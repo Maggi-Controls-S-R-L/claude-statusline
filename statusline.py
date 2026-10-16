@@ -120,8 +120,10 @@ def time_to_cap(
 def color_for_ratio(ratio: float) -> str:
     """Traffic light for time_to_cap / time_to_reset.
 
-    Red when the cap comes before the reset, yellow when the window is on
-    pace to use more than 80% of the budget, green otherwise.
+    Red when the cap comes before the reset, yellow when the cap lands less
+    than 25% of the time-to-reset after the reset (at the current pace, more
+    than 80% of the *remaining* budget is used before the reset), green
+    otherwise (at most 80% of the remaining budget).
     """
     if ratio < 1:
         return RED

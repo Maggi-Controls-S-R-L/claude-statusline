@@ -58,11 +58,11 @@ shown even when it lands after the reset, where it tells how much headroom is
 left. Its colour compares it with the time left until the reset
 (`r = time_to_cap / time_to_reset`):
 
-| Colour | Condition       | Meaning                                         |
-| ------ | --------------- | ----------------------------------------------- |
-| red    | `r < 1`         | the budget runs out before the reset            |
-| yellow | `1 ≤ r < 1.25`  | reaches the reset, but on pace to use over 80%  |
-| green  | `r ≥ 1.25`      | comfortable headroom                            |
+| Colour | Condition       | Meaning                                           |
+| ------ | --------------- | ------------------------------------------------- |
+| red    | `r < 1`         | the budget runs out before the reset              |
+| yellow | `1 ≤ r < 1.25`  | reaches the reset, but uses >80% of what is left  |
+| green  | `r ≥ 1.25`      | uses at most 80% of what is left before the reset |
 
 It is an estimate, not a forecast: bursty usage early in a window makes it
 noisy, and no minimum-elapsed threshold hides that. The field is omitted when

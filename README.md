@@ -149,28 +149,11 @@ fields:
 
 Unrecognised fields are ignored, so the script keeps working as the schema grows.
 
-## Development
+## Contributing
 
-```sh
-python -m pip install -U pip        # pip >= 25.1 for --group
-pip install -e . --group dev
-ruff check .
-ruff format --check .
-mypy statusline.py
-```
-
-## Testing
-
-The project uses **pytest**. The suite covers the pure formatting helpers
-(`make_bar`, `format_duration`, `reset_in`, `time_to_cap`, `human_tokens`,
-`color_for_pct`, `color_for_ratio`),
-the stdin/stdout edge cases of `main()` (BOM input, missing or past
-`resets_at`, `None` percentages, invalid JSON), and the placement of each
-segment on the two lines:
-
-```sh
-pytest
-```
+Development setup, checks, the branching and TDD workflow, previewing your
+changes live in Claude Code, and the release process are described in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

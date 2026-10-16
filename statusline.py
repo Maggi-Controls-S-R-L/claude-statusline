@@ -16,7 +16,7 @@ import json
 import sys
 import time
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ── ANSI codes ──────────────────────────────────────────────────────────────
 RESET = "\033[0m"

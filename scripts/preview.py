@@ -89,14 +89,21 @@ def save_settings(path: Path, data: dict[str, Any]) -> None:
     if KEY in data:
         check_block(data[KEY])
     text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    try:
+        payload = text.encode("utf-8")  # fails on lone surrogates
+    except UnicodeEncodeError as exc:
+        raise PreviewError(
+            f"cannot write {path} (content is not encodable as UTF-8: {exc}); "
+            "file left unchanged"
+        ) from exc
     tmp: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(
             dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
         )
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)

@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -45,14 +46,22 @@ class PreviewError(Exception):
 
 
 # ── settings file I/O ─────────────────────────────────────────────────────
+def _reject_constant(name: str) -> Any:
+    """``json.loads`` hook: NaN and the infinities are not valid JSON."""
+    raise ValueError(f"non-standard constant {name}")
+
+
 def load_settings(path: Path) -> dict[str, Any]:
     """Read the settings object; a missing file counts as ``{}``."""
     if not path.exists():
         return {}
-    text = path.read_text(encoding="utf-8")
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PreviewError(f"cannot read {path} ({exc})") from exc
+    try:
+        data = json.loads(text, parse_constant=_reject_constant)
+    except ValueError as exc:  # JSONDecodeError is a ValueError
         raise PreviewError(f"{path} is not valid JSON ({exc}); fix it first") from exc
     if not isinstance(data, dict):
         raise PreviewError(f"{path} does not contain a JSON object; fix it first")
@@ -79,17 +88,25 @@ def save_settings(path: Path, data: dict[str, Any]) -> None:
     """Write ``data`` atomically: temporary file in the same dir, then replace."""
     if KEY in data:
         check_block(data[KEY])
-    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    tmp: str | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+    except BaseException as exc:
+        if tmp is not None:
+            Path(tmp).unlink(missing_ok=True)
+        if isinstance(exc, OSError):
+            raise PreviewError(
+                f"cannot write {path} ({exc}); file left unchanged"
+            ) from exc
         raise
 
 
@@ -119,7 +136,12 @@ def is_own(block: Any, root: Path) -> bool:
     command = block.get("command")
     if not isinstance(command, str):
         return False
-    return os.path.normcase(script_path(root)) in os.path.normcase(command)
+    # The path must be a whole token: bounded by a quote, whitespace or the
+    # ends of the command, so ``statusline.py.bak`` or a longer path that merely
+    # ends with ours does not count.
+    target = re.escape(os.path.normcase(script_path(root)))
+    pattern = r'(?<![^\s"])' + target + r'(?![^\s"])'
+    return re.search(pattern, os.path.normcase(command)) is not None
 
 
 def describe(block: Any) -> str:
@@ -147,15 +169,16 @@ def current_branch(root: Path) -> str:
 def turn_on(root: Path, refresh: int | None = None, force: bool = False) -> str:
     path = root / SETTINGS
     data = load_settings(path)
+    present = KEY in data  # an explicit null counts as a (foreign) block
     existing = data.get(KEY)
-    if existing is not None and not is_own(existing, root) and not force:
+    if present and not is_own(existing, root) and not force:
         raise PreviewError(
             f"a foreign {KEY} is present in {path} ({describe(existing)}); "
             "use --force to overwrite it"
         )
     data[KEY] = build_block(root, refresh)
     save_settings(path, data)
-    verb = "updated" if existing is not None else "enabled"
+    verb = "updated" if present else "enabled"
     return f"preview {verb}: {data[KEY]['command']}"
 
 
@@ -177,8 +200,8 @@ def turn_off(root: Path, force: bool = False) -> str:
 
 def status(root: Path) -> str:
     data = load_settings(root / SETTINGS)
-    block = data.get(KEY)
-    if block is None:
+    block: Any = data.get(KEY)
+    if KEY not in data:
         lines = ["preview: inactive"]
     elif is_own(block, root):
         refresh = block.get("refreshInterval")

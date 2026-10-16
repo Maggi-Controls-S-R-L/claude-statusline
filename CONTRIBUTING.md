@@ -33,18 +33,36 @@ We use a lightweight [GitHub Flow](https://docs.github.com/get-started/using-git
 - `main` is always releasable and is **protected** — no direct pushes.
 - Do every change on a short-lived branch (`feat/...`, `fix/...`, `docs/...`,
   `chore/...`).
+- When the work starts from an issue, put the issue number before the slug:
+  `feat/2-session-on-line-1`. Changes without an issue keep the plain form
+  (`docs/short-description`).
 - Open a **pull request** into `main`. CI (lint, typecheck, tests on
-  3.10–3.13) must pass before the PR can merge.
+  3.10–3.13) must pass before the PR can merge. Reference the issue in the PR
+  description (`Closes #2`) so merging closes it.
 - Squash-merge into `main` and delete the branch.
 
 ```sh
-git checkout -b fix/short-description
+git checkout -b fix/42-short-description
 # ...work, commit...
-git push -u origin fix/short-description
+git push -u origin fix/42-short-description
 gh pr create --fill
 # once CI is green:
 gh pr merge --squash --delete-branch
 ```
+
+## Test-driven development
+
+Code changes (features and bug fixes) are developed test-first:
+
+1. **Red** — write tests for the new behaviour (or a test reproducing the bug)
+   and confirm they fail.
+2. **Green** — write the minimum code that makes them pass.
+3. **Refactor** — clean up with the suite green.
+
+Commit the failing tests before the implementation, so the PR history shows
+the red → green order. CI is expected to fail on that intermediate commit if
+you push it; only the PR head must be green to merge. Documentation- and
+tooling-only changes are exempt.
 
 Tags are not branches, so the release script (which pushes a `vX.Y.Z` tag) is
 unaffected by the `main` protection.

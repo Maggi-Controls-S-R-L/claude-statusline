@@ -26,6 +26,37 @@ mypy statusline.py
 pytest
 ```
 
+## Previewing your changes locally
+
+`scripts/preview.py` points the status line of Claude Code sessions opened **in
+this project** at the working-tree `statusline.py`, so you can see your changes
+live in the session you are working in. The global status line used everywhere
+else is not touched.
+
+```sh
+python scripts/preview.py on [--refresh N] [--force]   # enable / update
+python scripts/preview.py off [--force]                # disable
+python scripts/preview.py status                       # active, inactive or foreign
+```
+
+- `on` writes a complete `statusLine` block into `.claude/settings.local.json`
+  (git-ignored, personal to your machine), running `statusline.py` with the
+  interpreter that ran `preview.py`. `--refresh N` adds `refreshInterval: N`
+  (seconds); running `on` again updates the block.
+- `off` removes that block and leaves every other key alone.
+- Both refuse to touch a **foreign** `statusLine` (one that does not run this
+  checkout's `statusline.py`) unless you pass `--force`.
+- The preview follows **whatever is checked out**, uncommitted changes
+  included; `status` prints the current branch as a reminder. Changes to the
+  command are picked up live, without restarting the session.
+
+Why the script is strict: a project-local `statusLine` **replaces** the global
+one entirely — nested keys are not merged, so a block with only
+`refreshInterval` is invalid — and Claude Code skips a settings file with
+errors **entirely**, permissions included. The script therefore never rewrites
+a file that is not a valid JSON object, never writes a partial block, keeps
+the other keys in order, and replaces the file atomically.
+
 ## Branching & pull requests
 
 We use a lightweight [GitHub Flow](https://docs.github.com/get-started/using-github/github-flow):

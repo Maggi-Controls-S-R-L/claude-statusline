@@ -291,6 +291,16 @@ class TestSafety:
         assert path.read_bytes() == before
         assert [p.name for p in path.parent.iterdir()] == [path.name]
 
+    def test_unencodable_content_is_a_clean_error(self, preview, root, capsys):
+        path = root / ".claude" / "settings.local.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"env": {"A": "\\ud800"}}', encoding="utf-8")
+        before = path.read_bytes()
+        assert preview.main(["on"], root=root) == 1
+        assert capsys.readouterr().err.startswith("error:")
+        assert path.read_bytes() == before
+        assert [p.name for p in path.parent.iterdir()] == [path.name]
+
 
 # ── status ────────────────────────────────────────────────────────────────
 class TestStatus:

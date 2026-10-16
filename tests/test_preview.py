@@ -171,7 +171,9 @@ class TestOff:
 class TestInvalidFile:
     @pytest.mark.parametrize("command", [["on"], ["on", "--force"], ["off"]])
     @pytest.mark.parametrize(
-        "content", ['{"permissions": ', "", "[1, 2]", '"text"', "null"]
+        "content",
+        ['{"permissions": ', "", "[1, 2]", '"text"', "null"]
+        + ['{"x": NaN}', '{"x": Infinity}', '{"x": -Infinity}'],
     )
     def test_aborts_without_writing(self, preview, root, command, content):
         path = write(root, content)
@@ -183,6 +185,84 @@ class TestInvalidFile:
     def test_status_reports_error(self, preview, root):
         write(root, "{not json")
         assert preview.main(["status"], root=root) != 0
+
+    @pytest.mark.parametrize("command", [["on"], ["off"], ["status"]])
+    def test_non_utf8_file_is_a_clean_error(self, preview, root, command, capsys):
+        path = write(root, "")
+        path.write_bytes(b'{"x": "\xff\xfe"}')
+        assert preview.main(command, root=root) == 1
+        assert capsys.readouterr().err.startswith("error:")
+
+    @pytest.mark.parametrize("command", [["on"], ["off"], ["status"]])
+    def test_unreadable_path_is_a_clean_error(self, preview, root, command, capsys):
+        settings_file(root).mkdir(parents=True)
+        assert preview.main(command, root=root) == 1
+        assert capsys.readouterr().err.startswith("error:")
+
+
+# ── "statusLine": null is a foreign value everywhere ─────────────────────
+class TestNullBlock:
+    def test_on_aborts(self, preview, root, capsys):
+        path = write_json(root, {"statusLine": None})
+        before = path.read_bytes()
+        assert preview.main(["on"], root=root) == 1
+        assert path.read_bytes() == before
+        assert "foreign" in capsys.readouterr().err.lower()
+
+    def test_on_force_overwrites(self, preview, root):
+        write_json(root, {"statusLine": None})
+        assert preview.main(["on", "--force"], root=root) == 0
+        assert script_path(root) in read_json(root)["statusLine"]["command"]
+
+    def test_off_aborts(self, preview, root):
+        path = write_json(root, {"statusLine": None})
+        before = path.read_bytes()
+        assert preview.main(["off"], root=root) == 1
+        assert path.read_bytes() == before
+
+    def test_off_force_removes(self, preview, root):
+        write_json(root, {"permissions": {}, "statusLine": None})
+        assert preview.main(["off", "--force"], root=root) == 0
+        assert read_json(root) == {"permissions": {}}
+
+    def test_status_reports_foreign(self, preview, root, capsys):
+        write_json(root, {"statusLine": None})
+        assert preview.main(["status"], root=root) == 0
+        out = capsys.readouterr().out.lower()
+        assert "foreign" in out
+        assert "null" in out
+
+
+# ── ownership is an exact path match ──────────────────────────────────────
+class TestOwnership:
+    def foreign_commands(self, root: Path) -> list[str]:
+        path = script_path(root)
+        return [
+            f'python "{path}.bak"',
+            f'python "{path}x"',
+            f'python "/other{path}"',
+            f'python "{path}/extra"',
+        ]
+
+    def test_lookalike_commands_are_foreign(self, preview, root):
+        for command in self.foreign_commands(root):
+            block = {"type": "command", "command": command}
+            assert not preview.is_own(block, root), command
+
+    def test_lookalike_block_needs_force(self, preview, root):
+        for command in self.foreign_commands(root):
+            block = {"type": "command", "command": command}
+            path = write_json(root, {"statusLine": block})
+            before = path.read_bytes()
+            assert preview.main(["on"], root=root) == 1
+            assert preview.main(["off"], root=root) == 1
+            assert path.read_bytes() == before
+
+    def test_own_quoted_and_unquoted(self, preview, root):
+        path = script_path(root)
+        for command in (f'python "{path}"', f"python {path}", f'"{path}" --x'):
+            block = {"type": "command", "command": command}
+            assert preview.is_own(block, root), command
 
 
 # ── safety: never a partial block, atomic write ───────────────────────────
@@ -198,7 +278,7 @@ class TestSafety:
         assert preview.main(["on"], root=root) != 0
         assert settings_file(root).read_bytes() == before
 
-    def test_interrupted_write_keeps_original(self, preview, root, monkeypatch):
+    def test_interrupted_write_keeps_original(self, preview, root, monkeypatch, capsys):
         path = write_json(root, {"permissions": {"allow": ["x"]}})
         before = path.read_bytes()
 
@@ -206,8 +286,8 @@ class TestSafety:
             raise OSError("simulated crash")
 
         monkeypatch.setattr(os, "replace", boom)
-        with pytest.raises(OSError):
-            preview.main(["on"], root=root)
+        assert preview.main(["on"], root=root) == 1
+        assert "simulated crash" in capsys.readouterr().err
         assert path.read_bytes() == before
         assert [p.name for p in path.parent.iterdir()] == [path.name]
 

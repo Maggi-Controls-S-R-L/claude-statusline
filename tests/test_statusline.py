@@ -1,6 +1,7 @@
 """Tests for the pure helpers and the stdin/stdout edge cases of statusline.py."""
 
 import io
+import json
 import re
 import sys
 
@@ -8,11 +9,15 @@ import pytest
 
 import statusline
 from statusline import (
+    FIVE_HOUR_SECS,
+    SEVEN_DAY_SECS,
     color_for_pct,
+    color_for_ratio,
     format_duration,
     human_tokens,
     make_bar,
     reset_in,
+    time_to_cap,
 )
 
 
@@ -101,6 +106,85 @@ class TestResetIn:
 
     def test_just_under_one_hour(self):
         assert reset_in(59 * 60, now=0) == "59m"
+
+
+# ── time_to_cap ───────────────────────────────────────────────────────────
+class TestTimeToCap:
+    def test_window_lengths(self):
+        assert FIVE_HOUR_SECS == 5 * 3600
+        assert SEVEN_DAY_SECS == 7 * 86400
+
+    def test_half_used_at_half_window(self):
+        # 50% used after 2.5h of a 5h window -> another 2.5h to the cap.
+        assert time_to_cap(50, 9000, FIVE_HOUR_SECS, now=0) == pytest.approx(9000)
+
+    def test_normal_case(self):
+        # elapsed = 18000 - 7200 = 10800 s; (100 - 35) / 35 * 10800
+        expected = 65 / 35 * 10800
+        assert time_to_cap(35, 7200, FIVE_HOUR_SECS, now=0) == pytest.approx(expected)
+
+    def test_now_is_injected(self):
+        now = 1_000_000.0
+        got = time_to_cap(50, now + 9000, FIVE_HOUR_SECS, now=now)
+        assert got == pytest.approx(9000)
+
+    def test_seven_day_window(self):
+        # 13% used, 6.4d to reset -> elapsed 0.6d -> 87 / 13 * 0.6d
+        resets = 6.4 * 86400
+        expected = 87 / 13 * 0.6 * 86400
+        got = time_to_cap(13, resets, SEVEN_DAY_SECS, now=0)
+        assert got == pytest.approx(expected)
+
+    def test_cap_after_reset_is_still_returned(self):
+        # 10% used after 2.5h: cap in 22.5h, well past the reset.
+        got = time_to_cap(10, 9000, FIVE_HOUR_SECS, now=0)
+        assert got == pytest.approx(81000)
+
+    @pytest.mark.parametrize("used", [0, -5])
+    def test_no_usage_is_omitted(self, used):
+        assert time_to_cap(used, 9000, FIVE_HOUR_SECS, now=0) is None
+
+    @pytest.mark.parametrize("used", [100, 120])
+    def test_at_or_over_cap_is_omitted(self, used):
+        assert time_to_cap(used, 9000, FIVE_HOUR_SECS, now=0) is None
+
+    @pytest.mark.parametrize("resets_at", [None, 0])
+    def test_missing_reset_is_omitted(self, resets_at):
+        assert time_to_cap(35, resets_at, FIVE_HOUR_SECS, now=0) is None
+
+    def test_reset_in_the_past_is_omitted(self):
+        assert time_to_cap(35, 500, FIVE_HOUR_SECS, now=1000) is None
+
+    def test_reset_exactly_now_is_omitted(self):
+        assert time_to_cap(35, 1000, FIVE_HOUR_SECS, now=1000) is None
+
+    def test_zero_elapsed_is_omitted(self):
+        # resets_at exactly one window away -> nothing has elapsed yet.
+        assert time_to_cap(35, FIVE_HOUR_SECS, FIVE_HOUR_SECS, now=0) is None
+
+    def test_negative_elapsed_is_omitted(self):
+        # resets_at further away than the window length (clock skew).
+        assert time_to_cap(35, 20000, FIVE_HOUR_SECS, now=0) is None
+
+    def test_tiny_elapsed_is_not_thresholded(self):
+        # No minimum-elapsed threshold: 1 s elapsed still yields an estimate.
+        got = time_to_cap(1, FIVE_HOUR_SECS - 1, FIVE_HOUR_SECS, now=0)
+        assert got == pytest.approx(99)
+
+
+# ── color_for_ratio ───────────────────────────────────────────────────────
+class TestColorForRatio:
+    @pytest.mark.parametrize("ratio", [0, 0.5, 0.999])
+    def test_red_when_cap_before_reset(self, ratio):
+        assert color_for_ratio(ratio) == statusline.RED
+
+    @pytest.mark.parametrize("ratio", [1, 1.1, 1.249])
+    def test_yellow_when_tight(self, ratio):
+        assert color_for_ratio(ratio) == statusline.YELLOW
+
+    @pytest.mark.parametrize("ratio", [1.25, 2, 100])
+    def test_green_when_comfortable(self, ratio):
+        assert color_for_ratio(ratio) == statusline.GREEN
 
 
 # ── human_tokens ──────────────────────────────────────────────────────────
@@ -273,7 +357,9 @@ class TestSessionPlacement:
             "ctx " + "█" * 6 + "░" * 18 + " 24% (48k/200k)"
             "  ·  session 3h 12m  ·  Claude Opus 4.7"
         )
-        assert line2 == "5h 35% (↻ 2.0h)  ·  7d 70% (↻ 5.1d)  ·  API est. $12.34"
+        assert line2 == (
+            "5h 35% (↻ 2.0h · ⇲ 5.6h)  ·  7d 70% (↻ 5.1d · ⇲ 19.5h)  ·  API est. $12.34"
+        )
 
     def test_session_sits_between_context_and_model(self, monkeypatch, capsys):
         monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
@@ -331,6 +417,103 @@ class TestSessionPlacement:
         )
         line1, line2 = run_lines(monkeypatch, capsys, payload)
         assert line1.endswith("50%  ·  session 5m  ·  M")
+        assert line2 == "(no rate-limit / cost data)"
+
+
+# ── main() — time-to-cap field (issue #3) ────────────────────────────────
+def _rl_payload(window: str, used: float, resets_at: float | None) -> bytes:
+    win: dict[str, float] = {"used_percentage": used}
+    if resets_at is not None:
+        win["resets_at"] = resets_at
+    payload = {"rate_limits": {window: win}, "model": {"display_name": "M"}}
+    return json.dumps(payload).encode()
+
+
+class TestTimeToCapField:
+    @pytest.fixture(autouse=True)
+    def _freeze_time(self, monkeypatch):
+        monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+
+    def test_placed_after_reset_countdown(self, monkeypatch, capsys):
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 35, 7200))
+        assert line2 == "5h 35% (↻ 2.0h · ⇲ 5.6h)"
+
+    def test_seven_day_window(self, monkeypatch, capsys):
+        resets = 6.4 * 86400
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("seven_day", 13, resets))
+        assert line2 == "7d 13% (↻ 6.4d · ⇲ 4.0d)"
+
+    def test_minutes_format(self, monkeypatch, capsys):
+        # elapsed 10800 s; 20 / 80 * 10800 = 2700 s = 45m
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 80, 7200))
+        assert line2 == "5h 80% (↻ 2.0h · ⇲ 45m)"
+
+    def test_separator_is_dim(self, monkeypatch, capsys):
+        out = run_main(monkeypatch, capsys, _rl_payload("five_hour", 35, 7200))
+        dim, reset = statusline.DIM, statusline.RESET
+        assert f"{dim}(↻ 2.0h · ⇲ {reset}" in out
+
+    def _value_colour(self, monkeypatch, capsys, used, resets_at, text):
+        out = run_main(monkeypatch, capsys, _rl_payload("five_hour", used, resets_at))
+        for colour in (statusline.RED, statusline.YELLOW, statusline.GREEN):
+            if f"{colour}{text}{statusline.RESET}" in out:
+                return colour
+        raise AssertionError(f"{text!r} not found coloured in {out!r}")
+
+    def test_red_when_cap_before_reset(self, monkeypatch, capsys):
+        # cap in 45m, reset in 2.0h -> r = 0.375
+        colour = self._value_colour(monkeypatch, capsys, 80, 7200, "45m")
+        assert colour == statusline.RED
+
+    def test_yellow_at_ratio_one(self, monkeypatch, capsys):
+        # 50% after 2.5h, reset in 2.5h -> cap exactly at the reset (r = 1)
+        colour = self._value_colour(monkeypatch, capsys, 50, 9000, "2.5h")
+        assert colour == statusline.YELLOW
+
+    def test_yellow_when_tight(self, monkeypatch, capsys):
+        # 45% after 2.5h -> cap in 55/45 * 2.5h = 3.1h, r = 1.22
+        colour = self._value_colour(monkeypatch, capsys, 45, 9000, "3.1h")
+        assert colour == statusline.YELLOW
+
+    def test_green_when_comfortable(self, monkeypatch, capsys):
+        # 40% after 2.5h -> cap in 3.8h, r = 1.5
+        colour = self._value_colour(monkeypatch, capsys, 40, 9000, "3.8h")
+        assert colour == statusline.GREEN
+
+    def test_usage_colour_unchanged(self, monkeypatch, capsys):
+        out = run_main(monkeypatch, capsys, _rl_payload("five_hour", 80, 7200))
+        assert f"{statusline.YELLOW}80%{statusline.RESET}" in out
+
+    def test_omitted_when_used_is_zero(self, monkeypatch, capsys):
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 0, 7200))
+        assert line2 == "5h 0% (↻ 2.0h)"
+
+    def test_omitted_when_at_cap(self, monkeypatch, capsys):
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 100, 7200))
+        assert line2 == "5h 100% (↻ 2.0h)"
+
+    def test_omitted_when_reset_missing(self, monkeypatch, capsys):
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 35, None))
+        assert line2 == "5h 35%"
+
+    def test_omitted_when_reset_in_past(self, monkeypatch, capsys):
+        monkeypatch.setattr(statusline.time, "time", lambda: 10_000.0)
+        _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 35, 500))
+        assert line2 == "5h 35%"
+
+    def test_omitted_when_no_time_elapsed(self, monkeypatch, capsys):
+        payload = _rl_payload("five_hour", 35, FIVE_HOUR_SECS)
+        _, line2 = run_lines(monkeypatch, capsys, payload)
+        assert line2 == "5h 35% (↻ 5.0h)"
+
+    def test_omitted_on_clock_skew(self, monkeypatch, capsys):
+        payload = _rl_payload("seven_day", 35, SEVEN_DAY_SECS + 86400)
+        _, line2 = run_lines(monkeypatch, capsys, payload)
+        assert line2 == "7d 35% (↻ 8.0d)"
+
+    def test_absent_percentage_omits_segment(self, monkeypatch, capsys):
+        payload = b'{"rate_limits":{"five_hour":{}},"model":{"display_name":"M"}}'
+        _, line2 = run_lines(monkeypatch, capsys, payload)
         assert line2 == "(no rate-limit / cost data)"
 
 

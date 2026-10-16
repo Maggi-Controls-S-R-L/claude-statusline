@@ -10,7 +10,7 @@ command on stdin; this script renders it as:
 
 ```
 ctx ██████░░░░░░░░░░░░░░░░░░ 24% (48k/200k)  ·  session 3h 12m  ·  Claude Opus 4.7
-5h 35% (↻ 2.0h)  ·  7d 70% (↻ 5.1d)  ·  API est. $12.34
+5h 35% (↻ 2.0h · ⇲ 5.6h)  ·  7d 70% (↻ 5.1d · ⇲ 19.5h)  ·  API est. $12.34
 ```
 
 ## Features
@@ -19,7 +19,8 @@ ctx ██████░░░░░░░░░░░░░░░░░░ 24%
   compact token counts (`48k/200k`).
 - **Session wall-clock duration** and the **active model** name.
 - **Rate-limit usage** for the rolling 5-hour and 7-day windows, each with the
-  time remaining until it resets.
+  time remaining until it resets (`↻`) and a colour-coded estimate of when the
+  budget runs out at the current pace (`⇲`).
 - **API-equivalent cost estimate**.
 - **Graceful degradation** — sections are omitted when their data is absent
   (rate limits only appear for Pro/Max subscribers; the context line shows
@@ -36,9 +37,37 @@ Fields are grouped by topic:
 - **Line 1 — the session:** context-window usage (bar + %, with token counts),
   the session duration, and the active model. The session segment is omitted
   when `cost.total_duration_ms` is absent.
-- **Line 2 — the budget:** rate-limit usage (5h / 7d, with reset countdowns)
-  and the API-equivalent cost estimate. When none of these are available it
-  reads `(no rate-limit / cost data)`.
+- **Line 2 — the budget:** rate-limit usage (5h / 7d, with reset countdowns
+  and time-to-cap estimates) and the API-equivalent cost estimate. When none
+  of these are available it reads `(no rate-limit / cost data)`.
+
+## About the time-to-cap estimate
+
+`⇲` answers *"at this pace, when do I hit the limit?"* for each rate-limit
+window. It is a linear extrapolation of the **average pace since the window
+opened**, computed from `used_percentage`, `resets_at` and the current time:
+
+```
+elapsed     = window_length − (resets_at − now)
+time_to_cap = (100 − used) / used × elapsed
+```
+
+The window lengths are fixed at **5 hours** and **7 days**, matching the `5h` /
+`7d` labels. The value uses the same format as the reset countdown and is
+shown even when it lands after the reset, where it tells how much headroom is
+left. Its colour compares it with the time left until the reset
+(`r = time_to_cap / time_to_reset`):
+
+| Colour | Condition       | Meaning                                           |
+| ------ | --------------- | ------------------------------------------------- |
+| red    | `r < 1`         | the budget runs out before the reset              |
+| yellow | `1 ≤ r < 1.25`  | reaches the reset, but uses >80% of what is left  |
+| green  | `r ≥ 1.25`      | uses at most 80% of what is left before the reset |
+
+It is an estimate, not a forecast: bursty usage early in a window makes it
+noisy, and no minimum-elapsed threshold hides that. The field is omitted when
+usage is `0` or already `100%`, when `resets_at` is missing or past, or when
+no time has elapsed in the window (e.g. clock skew).
 
 ## About the cost figure
 
@@ -85,9 +114,10 @@ Clone the repository and reference `statusline.py` by its absolute path:
 ### Tip — keep time-based fields live while idle
 
 By default Claude Code re-runs the status line only on events (a new message,
-`/compact`, a permission change). The session duration and the reset
-countdowns therefore freeze whenever the session sits idle. Add the optional
-`refreshInterval` field to also re-run the command on a fixed timer:
+`/compact`, a permission change). The session duration, the reset
+countdowns and the time-to-cap estimates therefore freeze whenever the session
+sits idle. Add the optional `refreshInterval` field to also re-run the command
+on a fixed timer:
 
 ```json
 {
@@ -132,7 +162,8 @@ mypy statusline.py
 ## Testing
 
 The project uses **pytest**. The suite covers the pure formatting helpers
-(`make_bar`, `format_duration`, `reset_in`, `human_tokens`, `color_for_pct`),
+(`make_bar`, `format_duration`, `reset_in`, `time_to_cap`, `human_tokens`,
+`color_for_pct`, `color_for_ratio`),
 the stdin/stdout edge cases of `main()` (BOM input, missing or past
 `resets_at`, `None` percentages, invalid JSON), and the placement of each
 segment on the two lines:

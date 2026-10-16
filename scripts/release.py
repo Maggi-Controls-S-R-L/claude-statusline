@@ -69,7 +69,7 @@ def verify() -> None:
     py = sys.executable
     run(py, "-m", "ruff", "check", ".")
     run(py, "-m", "ruff", "format", "--check", ".")
-    run(py, "-m", "mypy", "statusline.py")
+    run(py, "-m", "mypy", "statusline.py", "scripts/preview.py")
     run(py, "-m", "pytest", "-q")
 
 

@@ -22,7 +22,7 @@ These are exactly what CI runs, so run them before pushing:
 ```sh
 ruff check .
 ruff format --check .
-mypy statusline.py
+mypy statusline.py scripts/preview.py
 pytest
 ```
 

@@ -4,6 +4,8 @@ Claude Code status line — two compact lines.
 
 Line 1:  context-window usage (bar + %)   ·   session duration   ·   model name
 Line 2:  rate-limit usage (5h / 7d)        ·   estimated API cost
+         each window: "5h 35% (↻ 2.0h · ⇲ 5.6h)" — reset countdown and the
+         estimated time until the budget hits 100% at the current pace
 
 The cost shown is `cost.total_cost_usd`: the client-side *pay-as-you-go
 API-equivalent estimate*, NOT the actual bill of a flat-rate
@@ -30,6 +32,10 @@ MAGENTA = "\033[35m"
 
 BAR_WIDTH = 24
 SEP = f"  {DIM}·{RESET}  "  # dim middle-dot separator
+
+# Rate-limit window lengths, matching the "5h" / "7d" labels.
+FIVE_HOUR_SECS = 5 * 3600
+SEVEN_DAY_SECS = 7 * 86400
 
 
 def make_bar(pct: float, width: int = BAR_WIDTH) -> str:
@@ -61,18 +67,8 @@ def format_duration(ms: float) -> str:
     return f"{mins}m"
 
 
-def reset_in(epoch_secs: float | None, now: float) -> str:
-    """Indicative time left until a rate-limit window resets.
-
-    Uses a single largest unit with one decimal: '5.0d', '2.8h' or '47m'.
-    Returns "" when the timestamp is missing or already in the past, so the
-    percentage can be shown without a stale countdown.
-    """
-    if not epoch_secs:
-        return ""
-    secs = epoch_secs - now
-    if secs <= 0:
-        return ""
+def format_eta(secs: float) -> str:
+    """Single largest unit with one decimal: '5.0d', '2.8h' or '47m'."""
     days = secs / 86400.0
     if days >= 1:
         return f"{days:.1f}d"
@@ -80,6 +76,78 @@ def reset_in(epoch_secs: float | None, now: float) -> str:
     if hours >= 1:
         return f"{hours:.1f}h"
     return f"{secs / 60.0:.0f}m"
+
+
+def reset_in(epoch_secs: float | None, now: float) -> str:
+    """Indicative time left until a rate-limit window resets.
+
+    Formatted by `format_eta`. Returns "" when the timestamp is missing or
+    already in the past, so the percentage can be shown without a stale
+    countdown.
+    """
+    if not epoch_secs:
+        return ""
+    secs = epoch_secs - now
+    if secs <= 0:
+        return ""
+    return format_eta(secs)
+
+
+def time_to_cap(
+    used: float, resets_at: float | None, window_secs: float, now: float
+) -> float | None:
+    """Seconds until a rate-limit window hits 100% at the average pace so far.
+
+    Linear extrapolation since the window opened:
+        elapsed     = window_secs - (resets_at - now)
+        time_to_cap = (100 - used) / used * elapsed
+
+    Returns None when there is no reliable estimate: no usage yet, already at
+    the cap, `resets_at` missing or in the past, or nothing elapsed (e.g.
+    clock skew pushing `resets_at` beyond the window length).
+    """
+    if used <= 0 or used >= 100 or not resets_at:
+        return None
+    to_reset = resets_at - now
+    if to_reset <= 0:
+        return None
+    elapsed = window_secs - to_reset
+    if elapsed <= 0:
+        return None
+    return (100 - used) / used * elapsed
+
+
+def color_for_ratio(ratio: float) -> str:
+    """Traffic light for time_to_cap / time_to_reset.
+
+    Red when the cap comes before the reset, yellow when the window is on
+    pace to use more than 80% of the budget, green otherwise.
+    """
+    if ratio < 1:
+        return RED
+    if ratio < 1.25:
+        return YELLOW
+    return GREEN
+
+
+def rate_limit_part(
+    label: str,
+    used: float,
+    resets_at: float | None,
+    window_secs: float,
+    now: float,
+) -> str:
+    """Render one window: usage %, reset countdown and time to cap."""
+    part = f"{DIM}{label}{RESET} {color_for_pct(used)}{used:.0f}%{RESET}"
+    rem = reset_in(resets_at, now)
+    if not rem:
+        return part
+    ttc = time_to_cap(used, resets_at, window_secs, now)
+    if ttc is None or resets_at is None:
+        return part + f" {DIM}(↻ {rem}){RESET}"
+    c = color_for_ratio(ttc / (resets_at - now))
+    cap = f"{c}{format_eta(ttc)}{RESET}"
+    return part + f" {DIM}(↻ {rem} · ⇲ {RESET}{cap}{DIM}){RESET}"
 
 
 def human_tokens(n: float) -> str:
@@ -161,19 +229,9 @@ def main() -> None:
     # ── Line 2: rate limits + estimated cost ─────────────────────────────────
     parts = []
     if five_h is not None:
-        c = color_for_pct(five_h)
-        part = f"{DIM}5h{RESET} {c}{five_h:.0f}%{RESET}"
-        rem = reset_in(five_h_reset, now)
-        if rem:
-            part += f" {DIM}(↻ {rem}){RESET}"
-        parts.append(part)
+        parts.append(rate_limit_part("5h", five_h, five_h_reset, FIVE_HOUR_SECS, now))
     if seven_d is not None:
-        c = color_for_pct(seven_d)
-        part = f"{DIM}7d{RESET} {c}{seven_d:.0f}%{RESET}"
-        rem = reset_in(seven_d_reset, now)
-        if rem:
-            part += f" {DIM}(↻ {rem}){RESET}"
-        parts.append(part)
+        parts.append(rate_limit_part("7d", seven_d, seven_d_reset, SEVEN_DAY_SECS, now))
     if cost_raw is not None:
         with contextlib.suppress(TypeError, ValueError):
             parts.append(

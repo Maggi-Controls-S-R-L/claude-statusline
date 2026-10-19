@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-Claude Code status line — two compact lines.
+Claude Code status line — compact, with a configurable layout.
+
+The layout comes from the CLAUDE_STATUSLINE_LAYOUT environment variable
+(see DEFAULT_LAYOUT and FIELDS). The default renders two lines:
 
 Line 1:  context-window usage (bar + %)   │   session duration   │   model name
 Line 2:  rate-limit usage (5h / 7d)        │   estimated API cost
-         each window: "5h 35% (↻ 2.0h · ⇲ 5.6h)" — reset countdown and the
+         each window: "7d 70% (↻ 5.1d · ⇲ 19.5h)" — reset countdown and the
          estimated time until the budget hits 100% at the current pace
+         (the 5h window shows only the countdown by default)
 
 The cost shown is `cost.total_cost_usd`: the client-side *pay-as-you-go
 API-equivalent estimate*, NOT the actual bill of a flat-rate
@@ -15,8 +19,11 @@ subscriber the rate-limit percentages are the meaningful budget signal.
 
 import contextlib
 import json
+import os
 import sys
 import time
+from dataclasses import dataclass
+from typing import Any
 
 __version__ = "1.3.0"
 
@@ -37,6 +44,23 @@ SEP = f" {BLUE}│{RESET} "  # blue vertical-bar separator
 # Rate-limit window lengths, matching the "5h" / "7d" labels.
 FIVE_HOUR_SECS = 5 * 3600
 SEVEN_DAY_SECS = 7 * 86400
+
+# ── Layout ──────────────────────────────────────────────────────────────────
+# Fields separated by whitespace, "/" starts a new line, "field:opt,opt"
+# selects the parts of a composite field (no options = its default parts).
+LAYOUT_ENV = "CLAUDE_STATUSLINE_LAYOUT"
+DEFAULT_LAYOUT = "ctx session model / 5h:reset 7d cost"
+
+# Field name -> its options, in rendering order. Every option is a default
+# part; a field with no options accepts none.
+FIELDS: dict[str, tuple[str, ...]] = {
+    "ctx": ("bar", "pct", "tokens"),
+    "session": (),
+    "model": (),
+    "5h": ("reset", "cap"),
+    "7d": ("reset", "cap"),
+    "cost": (),
+}
 
 
 def make_bar(pct: float, width: int = BAR_WIDTH) -> str:
@@ -139,20 +163,29 @@ def rate_limit_part(
     resets_at: float | None,
     window_secs: float,
     now: float,
+    reset: bool = True,
+    cap: bool = True,
 ) -> str:
-    """Render one window: usage %, reset countdown and time to cap."""
+    """Render one window: usage %, reset countdown and time to cap.
+
+    `reset` / `cap` select the bracketed parts; a part without data is
+    skipped, and the brackets go away when none is left.
+    """
     part = f"{DIM}{label}{RESET} {color_for_pct(used)}{used:.0f}%{RESET}"
+    extras = []
     rem = reset_in(resets_at, now)
-    if not rem:
-        return part
-    # Plain countdown like the session duration; ⇲ shares its value's colour.
-    countdown = f"↻ {rem}"
+    if reset and rem:
+        # Plain countdown like the session duration.
+        extras.append(f"↻ {rem}")
     ttc = time_to_cap(used, resets_at, window_secs, now)
-    if ttc is None or resets_at is None:
-        return part + f" {DIM}({RESET}{countdown}{DIM}){RESET}"
-    c = color_for_ratio(ttc / (resets_at - now))
-    cap = f"{c}⇲ {format_eta(ttc)}{RESET}"
-    return part + f" {DIM}({RESET}{countdown}{DIM} · {RESET}{cap}{DIM}){RESET}"
+    if cap and ttc is not None and resets_at is not None:
+        # ⇲ shares its value's colour.
+        c = color_for_ratio(ttc / (resets_at - now))
+        extras.append(f"{c}⇲ {format_eta(ttc)}{RESET}")
+    if not extras:
+        return part
+    inner = f"{DIM} · {RESET}".join(extras)
+    return part + f" {DIM}({RESET}{inner}{DIM}){RESET}"
 
 
 def human_tokens(n: float) -> str:
@@ -163,6 +196,162 @@ def human_tokens(n: float) -> str:
     if n < 10000:
         return f"{n / 1000:.1f}k"
     return f"{n / 1000:.0f}k"
+
+
+@dataclass
+class Status:
+    """The subset of the status payload the fields render; None = no data."""
+
+    used_pct: float | None = None
+    tokens_used: float | None = None
+    cw_size: float | None = None
+    model: str = "unknown model"
+    five_h: float | None = None
+    five_h_reset: float | None = None
+    seven_d: float | None = None
+    seven_d_reset: float | None = None
+    cost_usd: float | None = None
+    duration_ms: float | None = None
+
+
+def _to_float(value: Any) -> float | None:
+    """float(value), or None when it is missing or not a number."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_status(data: dict[str, Any]) -> Status:
+    """Extract the rendered fields from the JSON payload Claude Code sends."""
+    # ── Context window ───────────────────────────────────────────────────────
+    cw = data.get("context_window", {}) or {}
+    tokens_used = cw.get("total_input_tokens")
+    cw_size = cw.get("context_window_size")
+    used_pct = cw.get("used_percentage")
+    if used_pct is None and tokens_used is not None and cw_size:
+        used_pct = tokens_used / cw_size * 100.0
+
+    # ── Model ────────────────────────────────────────────────────────────────
+    model_info = data.get("model", {}) or {}
+    model = model_info.get("display_name") or model_info.get("id") or "unknown model"
+
+    # ── Rate limits (present only for Pro/Max subscribers) ───────────────────
+    rl = data.get("rate_limits", {}) or {}
+    five_h = rl.get("five_hour", {}) or {}
+    seven_d = rl.get("seven_day", {}) or {}
+
+    # ── Cost — API-equivalent estimate, not the real subscription bill ───────
+    cost = data.get("cost") or {}
+
+    return Status(
+        used_pct=used_pct,
+        tokens_used=tokens_used,
+        cw_size=cw_size,
+        model=model,
+        five_h=five_h.get("used_percentage"),
+        five_h_reset=five_h.get("resets_at"),
+        seven_d=seven_d.get("used_percentage"),
+        seven_d_reset=seven_d.get("resets_at"),
+        cost_usd=_to_float(cost.get("total_cost_usd")),
+        duration_ms=_to_float(cost.get("total_duration_ms")),
+    )
+
+
+def parse_layout(layout: str) -> list[list[str]]:
+    """Split a layout string into lines of field tokens.
+
+    "/" separates lines and whitespace separates fields, so extra spaces and
+    empty lines (leading, trailing or repeated "/") are ignored. A layout with
+    no fields at all (unset, blank, only "/") falls back to DEFAULT_LAYOUT.
+    """
+    lines = [line.split() for line in layout.split("/")]
+    lines = [tokens for tokens in lines if tokens]
+    return lines or parse_layout(DEFAULT_LAYOUT)
+
+
+def context_part(status: Status, opts: set[str]) -> str | None:
+    """Render the context window with the selected parts (bar, pct, tokens)."""
+    if status.used_pct is None:
+        return f"{DIM}ctx (no messages yet){RESET}"
+    c = color_for_pct(status.used_pct)
+    parts = []
+    if "bar" in opts:
+        parts.append(f"{c}{make_bar(status.used_pct)}{RESET}")
+    if "pct" in opts:
+        parts.append(f"{BOLD}{c}{status.used_pct:.0f}%{RESET}")
+    if "tokens" in opts and status.tokens_used is not None:
+        size = human_tokens(status.tokens_used)
+        if status.cw_size:
+            size += f"/{human_tokens(status.cw_size)}"
+        # Bracketed as a detail of the bar / %; bare when shown alone.
+        parts.append(f"{DIM}({RESET}{size}{DIM}){RESET}" if parts else size)
+    if not parts:
+        return None
+    return f"{DIM}ctx{RESET} " + " ".join(parts)
+
+
+def render_field(token: str, status: Status, now: float) -> str | None:
+    """Render one layout token, or None when its field has no data.
+
+    An unknown field, an unknown option, options on a field that takes none,
+    or an empty option list render the whole token as a red "?token", so a
+    typo shows up in place instead of being silently dropped.
+    """
+    name, colon, opts_text = token.partition(":")
+    allowed = FIELDS.get(name)
+    if allowed is None:
+        return f"{RED}?{token}{RESET}"
+    opts = set(allowed)
+    if colon:
+        # Stray commas are tolerated; repeated options are merged.
+        opts = {opt for opt in opts_text.split(",") if opt}
+        if not opts or not opts <= set(allowed):
+            return f"{RED}?{token}{RESET}"
+
+    if name == "ctx":
+        return context_part(status, opts)
+    if name == "session":
+        if status.duration_ms is None:
+            return None
+        return f"{DIM}session{RESET} {format_duration(status.duration_ms)}"
+    if name == "model":
+        return f"{CYAN}{BOLD}{status.model}{RESET}"
+    if name in ("5h", "7d"):
+        used, resets_at, window = {
+            "5h": (status.five_h, status.five_h_reset, FIVE_HOUR_SECS),
+            "7d": (status.seven_d, status.seven_d_reset, SEVEN_DAY_SECS),
+        }[name]
+        if used is None:
+            return None
+        return rate_limit_part(
+            name, used, resets_at, window, now, "reset" in opts, "cap" in opts
+        )
+    # cost
+    if status.cost_usd is None:
+        return None
+    return f"{DIM}API est.{RESET} {MAGENTA}${status.cost_usd:,.2f}{RESET}"
+
+
+def render(status: Status, layout: str, now: float) -> list[str]:
+    """Render the status line, one string per output line.
+
+    Fields without data are omitted together with their separator, and a
+    line with nothing to show is dropped — possibly every line, in which
+    case the status line is simply blank.
+    """
+    lines = []
+    for tokens in parse_layout(layout):
+        parts = [
+            part
+            for token in tokens
+            if (part := render_field(token, status, now)) is not None
+        ]
+        if parts:
+            lines.append(SEP.join(parts))
+    return lines
 
 
 def main() -> None:
@@ -184,68 +373,9 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
-    # ── Context window ───────────────────────────────────────────────────────
-    cw = data.get("context_window", {}) or {}
-    tokens_used = cw.get("total_input_tokens")
-    cw_size = cw.get("context_window_size")
-    used_pct = cw.get("used_percentage")
-    if used_pct is None and tokens_used is not None and cw_size:
-        used_pct = tokens_used / cw_size * 100.0
-
-    # ── Model ────────────────────────────────────────────────────────────────
-    model_info = data.get("model", {}) or {}
-    model = model_info.get("display_name") or model_info.get("id") or "unknown model"
-
-    # ── Rate limits (present only for Pro/Max subscribers) ───────────────────
-    rl = data.get("rate_limits", {}) or {}
-    five_h = (rl.get("five_hour", {}) or {}).get("used_percentage")
-    five_h_reset = (rl.get("five_hour", {}) or {}).get("resets_at")
-    seven_d = (rl.get("seven_day", {}) or {}).get("used_percentage")
-    seven_d_reset = (rl.get("seven_day", {}) or {}).get("resets_at")
-    now = time.time()
-
-    # ── Cost — API-equivalent estimate, not the real subscription bill ───────
-    cost = data.get("cost") or {}
-    cost_raw = cost.get("total_cost_usd")
-    duration_ms = cost.get("total_duration_ms")
-
-    # ── Line 1: context + session duration + model ───────────────────────────
-    if used_pct is not None:
-        c = color_for_pct(used_pct)
-        ctx = (
-            f"{DIM}ctx{RESET} {c}{make_bar(used_pct)}{RESET} "
-            f"{BOLD}{c}{used_pct:.0f}%{RESET}"
-        )
-        if tokens_used is not None:
-            size = human_tokens(tokens_used)
-            if cw_size:
-                size += f"/{human_tokens(cw_size)}"
-            ctx += f" {DIM}({RESET}{size}{DIM}){RESET}"
-    else:
-        ctx = f"{DIM}ctx (no messages yet){RESET}"
-    line1_parts = [ctx]
-    if duration_ms is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            dur = format_duration(float(duration_ms))
-            line1_parts.append(f"{DIM}session{RESET} {dur}")
-    line1_parts.append(f"{CYAN}{BOLD}{model}{RESET}")
-    line1 = SEP.join(line1_parts)
-
-    # ── Line 2: rate limits + estimated cost ─────────────────────────────────
-    parts = []
-    if five_h is not None:
-        parts.append(rate_limit_part("5h", five_h, five_h_reset, FIVE_HOUR_SECS, now))
-    if seven_d is not None:
-        parts.append(rate_limit_part("7d", seven_d, seven_d_reset, SEVEN_DAY_SECS, now))
-    if cost_raw is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            parts.append(
-                f"{DIM}API est.{RESET} {MAGENTA}${float(cost_raw):,.2f}{RESET}"
-            )
-    line2 = SEP.join(parts) if parts else f"{DIM}(no rate-limit / cost data){RESET}"
-
-    print(line1)
-    print(line2)
+    layout = os.environ.get(LAYOUT_ENV, "")
+    for line in render(parse_status(data), layout, time.time()):
+        print(line)
 
 
 if __name__ == "__main__":

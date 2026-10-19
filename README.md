@@ -73,18 +73,23 @@ Syntax:
 | `7d`      | 7-day rate-limit usage         | `reset`, `cap`         | `reset`, `cap` |
 | `cost`    | API-equivalent cost estimate   | —                      | —              |
 
-`reset` is the countdown to the window reset (`↻`), `cap` the time-to-cap
-estimate (`⇲`); the usage percentage is always shown. The default layout
-picks `5h:reset`: on a window of at most five hours the percentage already
-says most of it, and the average-pace extrapolation is noisy. The layout
-before version 1.4 is one string away: `ctx session model / 5h 7d cost`.
+For `ctx`, `tokens` is shown in brackets after the bar or percentage, and bare
+when it is the only part (`ctx 48k/200k`); `ctx:tokens` is omitted when the
+payload has no token count.
+
+For `5h` / `7d`, `reset` is the countdown to the window reset (`↻`), `cap` the
+time-to-cap estimate (`⇲`); the usage percentage is always shown. The default
+layout picks `5h:reset`: on a window of at most five hours the percentage
+already says most of it, and the average-pace extrapolation is noisy. The
+layout before version 1.4 is one string away: `ctx session model / 5h 7d cost`.
 
 Behaviour:
 
 - Fields without data are omitted together with their separator, and a line
   with nothing to show is dropped. Before the first message `ctx` reads
   `ctx (no messages yet)`. If no field of the layout has data, the status line
-  is blank.
+  is blank. A non-numeric or non-finite value in the payload (a string, `NaN`,
+  an infinity) counts as missing data.
 - The status line never fails on a bad layout: an unknown field, an unknown
   option, options on a field that takes none, or an empty option list (`5h:`)
   render the whole token as a red `?token` in its position, so a typo is

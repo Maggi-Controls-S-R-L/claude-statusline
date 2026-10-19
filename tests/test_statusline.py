@@ -9,16 +9,30 @@ import pytest
 
 import statusline
 from statusline import (
+    DEFAULT_LAYOUT,
     FIVE_HOUR_SECS,
+    LAYOUT_ENV,
     SEVEN_DAY_SECS,
     color_for_pct,
     color_for_ratio,
     format_duration,
     human_tokens,
     make_bar,
+    parse_layout,
+    parse_status,
+    render,
     reset_in,
     time_to_cap,
 )
+
+# The layout used before issue #13: every part of every field.
+FULL_LAYOUT = "ctx session model / 5h 7d cost"
+
+
+@pytest.fixture(autouse=True)
+def _default_layout(monkeypatch):
+    # Isolate every test from a layout set in the developer's environment.
+    monkeypatch.delenv(LAYOUT_ENV, raising=False)
 
 
 # ── make_bar ──────────────────────────────────────────────────────────────
@@ -256,7 +270,7 @@ class TestMain:
         out = run_main(monkeypatch, capsys, payload)
         assert "Test Model" in out
         assert "ctx" in out
-        assert out.count("\n") == 2  # exactly two printed lines
+        assert out.count("\n") == 1  # no rate-limit / cost data: line 2 dropped
 
     def test_invalid_json_exits_zero(self, monkeypatch, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -274,7 +288,7 @@ class TestMain:
         )
         out = run_main(monkeypatch, capsys, payload)
         assert "no messages yet" in out
-        assert "no rate-limit / cost data" in out
+        assert "no rate-limit / cost data" not in out
 
     def test_percentage_computed_from_tokens(self, monkeypatch, capsys):
         payload = (
@@ -333,12 +347,10 @@ class TestMain:
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def run_lines(monkeypatch, capsys, raw: bytes) -> tuple[str, str]:
-    """Run main() and return its two output lines with ANSI codes stripped."""
+def run_lines(monkeypatch, capsys, raw: bytes) -> list[str]:
+    """Run main() and return its output lines with ANSI codes stripped."""
     out = run_main(monkeypatch, capsys, raw)
-    lines = _ANSI_RE.sub("", out).splitlines()
-    assert len(lines) == 2
-    return lines[0], lines[1]
+    return _ANSI_RE.sub("", out).splitlines()
 
 
 class TestSessionPlacement:
@@ -357,9 +369,8 @@ class TestSessionPlacement:
             "ctx " + "█" * 6 + "░" * 18 + " 24% (48k/200k)"
             " │ session 3h 12m │ Claude Opus 4.7"
         )
-        assert line2 == (
-            "5h 35% (↻ 2.0h · ⇲ 5.6h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34"
-        )
+        # Default layout (issue #13): no time-to-cap on the 5-hour window.
+        assert line2 == "5h 35% (↻ 2.0h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34"
 
     def test_session_sits_between_context_and_model(self, monkeypatch, capsys):
         monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
@@ -385,9 +396,8 @@ class TestSessionPlacement:
     def test_pre_first_turn(self, monkeypatch, capsys):
         # Before the first turn Claude Code already sends total_duration_ms.
         payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":0}}'
-        line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet) │ session 0m │ M"
-        assert line2 == "(no rate-limit / cost data)"
+        lines = run_lines(monkeypatch, capsys, payload)
+        assert lines == ["ctx (no messages yet) │ session 0m │ M"]
 
     def test_missing_duration_omits_segment(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"},"cost":{"total_cost_usd":1.5}}'
@@ -397,28 +407,27 @@ class TestSessionPlacement:
 
     def test_missing_cost_object_omits_segment(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"}}'
-        line1, _ = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet) │ M"
+        lines = run_lines(monkeypatch, capsys, payload)
+        assert lines == ["ctx (no messages yet) │ M"]
 
     def test_null_duration_omits_segment(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":null}}'
-        line1, _ = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet) │ M"
+        lines = run_lines(monkeypatch, capsys, payload)
+        assert lines == ["ctx (no messages yet) │ M"]
 
     def test_non_numeric_duration_is_ignored(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":"oops"}}'
-        line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet) │ M"
-        assert "session" not in line2
+        lines = run_lines(monkeypatch, capsys, payload)
+        assert lines == ["ctx (no messages yet) │ M"]
 
-    def test_line_2_fallback_when_only_duration_present(self, monkeypatch, capsys):
+    def test_line_2_dropped_when_only_duration_present(self, monkeypatch, capsys):
         payload = (
             b'{"context_window":{"used_percentage":50},'
             b'"model":{"display_name":"M"},"cost":{"total_duration_ms":300000}}'
         )
-        line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1.endswith("50% │ session 5m │ M")
-        assert line2 == "(no rate-limit / cost data)"
+        lines = run_lines(monkeypatch, capsys, payload)
+        assert len(lines) == 1
+        assert lines[0].endswith("50% │ session 5m │ M")
 
 
 # ── main() — time-to-cap field (issue #3) ────────────────────────────────
@@ -434,6 +443,8 @@ class TestTimeToCapField:
     @pytest.fixture(autouse=True)
     def _freeze_time(self, monkeypatch):
         monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+        # The default layout hides ⇲ on the 5-hour window (issue #13).
+        monkeypatch.setenv(LAYOUT_ENV, FULL_LAYOUT)
 
     def test_placed_after_reset_countdown(self, monkeypatch, capsys):
         _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 35, 7200))
@@ -517,8 +528,8 @@ class TestTimeToCapField:
 
     def test_absent_percentage_omits_segment(self, monkeypatch, capsys):
         payload = b'{"rate_limits":{"five_hour":{}},"model":{"display_name":"M"}}'
-        _, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line2 == "(no rate-limit / cost data)"
+        lines = run_lines(monkeypatch, capsys, payload)
+        assert lines == ["ctx (no messages yet) │ M"]
 
 
 # ── --version flag ─────────────────────────────────────────────────────────
@@ -542,6 +553,7 @@ class TestReadability:
     @pytest.fixture(autouse=True)
     def _freeze_time(self, monkeypatch):
         monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+        monkeypatch.setenv(LAYOUT_ENV, FULL_LAYOUT)
 
     def test_reset_countdown_is_plain_white(self, monkeypatch, capsys):
         out = run_main(monkeypatch, capsys, _rl_payload("five_hour", 35, 7200))
@@ -578,3 +590,227 @@ class TestReadability:
         blue, reset = statusline.BLUE, statusline.RESET
         assert f" {blue}│{reset} " in out.splitlines()[0]
         assert "·" not in out
+
+
+# ── configurable layout (issue #13) ───────────────────────────────────────
+_FULL_DATA = {
+    "context_window": {"total_input_tokens": 48000, "context_window_size": 200000},
+    "model": {"display_name": "Claude Opus 4.7"},
+    "rate_limits": {
+        "five_hour": {"used_percentage": 35, "resets_at": 7200},
+        "seven_day": {"used_percentage": 70, "resets_at": 440640},
+    },
+    "cost": {"total_cost_usd": 12.34, "total_duration_ms": 11520000},
+}
+_BAR = "█" * 6 + "░" * 18  # 24% of the default bar width
+
+
+def render_raw(layout: str, data: dict | None = None) -> list[str]:
+    """Render `layout` for `data` (default: a full payload) at now=0."""
+    status = parse_status(_FULL_DATA if data is None else data)
+    return render(status, layout, now=0.0)
+
+
+def plain(layout: str, data: dict | None = None) -> list[str]:
+    """Like render_raw, with the ANSI codes stripped."""
+    return [_ANSI_RE.sub("", line) for line in render_raw(layout, data)]
+
+
+def error(token: str) -> str:
+    return f"{statusline.RED}?{token}{statusline.RESET}"
+
+
+class TestParseLayout:
+    def test_default_layout(self):
+        assert DEFAULT_LAYOUT == "ctx session model / 5h:reset 7d cost"
+        assert parse_layout(DEFAULT_LAYOUT) == [
+            ["ctx", "session", "model"],
+            ["5h:reset", "7d", "cost"],
+        ]
+
+    @pytest.mark.parametrize("layout", ["", "   ", "\t\n", "/", " / / "])
+    def test_no_fields_falls_back_to_default(self, layout):
+        assert parse_layout(layout) == parse_layout(DEFAULT_LAYOUT)
+
+    def test_extra_whitespace_is_ignored(self):
+        assert parse_layout("  ctx\t model \n/  cost  ") == [["ctx", "model"], ["cost"]]
+
+    def test_slash_needs_no_surrounding_spaces(self):
+        assert parse_layout("ctx/model") == [["ctx"], ["model"]]
+
+    def test_empty_lines_are_dropped(self):
+        assert parse_layout("/ ctx // model /") == [["ctx"], ["model"]]
+
+
+class TestRenderLayout:
+    def test_default_layout(self):
+        assert plain(DEFAULT_LAYOUT) == [
+            f"ctx {_BAR} 24% (48k/200k) │ session 3h 12m │ Claude Opus 4.7",
+            "5h 35% (↻ 2.0h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34",
+        ]
+
+    def test_previous_layout_is_one_string_away(self):
+        assert plain(FULL_LAYOUT)[1] == (
+            "5h 35% (↻ 2.0h · ⇲ 5.6h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34"
+        )
+
+    def test_custom_order_on_one_line(self):
+        assert plain("model cost session") == [
+            "Claude Opus 4.7 │ API est. $12.34 │ session 3h 12m"
+        ]
+
+    def test_three_lines(self):
+        assert plain("model / ctx:pct / cost") == [
+            "Claude Opus 4.7",
+            "ctx 24%",
+            "API est. $12.34",
+        ]
+
+    def test_separator_is_the_blue_bar(self):
+        (line,) = render_raw("model cost")
+        assert statusline.SEP in line
+
+    def test_field_without_data_is_omitted_with_its_separator(self):
+        data = {"model": {"display_name": "M"}, "cost": {"total_cost_usd": 1.5}}
+        assert plain("session 5h model 7d cost", data) == ["M │ API est. $1.50"]
+
+    def test_line_without_data_is_dropped(self):
+        data = {"model": {"display_name": "M"}}
+        assert plain("5h 7d / model / cost session", data) == ["M"]
+
+    def test_nothing_rendered_gives_no_lines(self):
+        assert plain("5h 7d cost", {"model": {"display_name": "M"}}) == []
+
+    def test_no_messages_placeholder_stays(self):
+        assert plain("ctx", {}) == ["ctx (no messages yet)"]
+
+    def test_duplicate_fields_are_rendered_each_time(self):
+        assert plain("cost cost") == ["API est. $12.34 │ API est. $12.34"]
+
+
+class TestLayoutErrors:
+    def test_unknown_field_is_red_in_place(self):
+        (line,) = render_raw("model bogus cost")
+        assert error("bogus") in line
+        assert _ANSI_RE.sub("", line) == "Claude Opus 4.7 │ ?bogus │ API est. $12.34"
+
+    def test_unknown_option(self):
+        assert render_raw("ctx:pct,bogus") == [error("ctx:pct,bogus")]
+
+    def test_option_on_field_without_options(self):
+        assert render_raw("model:short") == [error("model:short")]
+
+    def test_empty_option_list(self):
+        assert render_raw("5h:") == [error("5h:")]
+
+    def test_only_commas_as_options(self):
+        assert render_raw("5h:,") == [error("5h:,")]
+
+    def test_field_names_are_case_sensitive(self):
+        assert render_raw("CTX") == [error("CTX")]
+
+    def test_error_keeps_a_line_without_data(self):
+        assert render_raw("cost typo", {}) == [error("typo")]
+
+
+class TestContextOptions:
+    @pytest.mark.parametrize("layout", ["ctx", "ctx:bar,pct,tokens"])
+    def test_default_is_all_parts(self, layout):
+        assert plain(layout) == [f"ctx {_BAR} 24% (48k/200k)"]
+
+    def test_pct_only(self):
+        assert plain("ctx:pct") == ["ctx 24%"]
+
+    def test_pct_only_keeps_bold_colour(self):
+        (line,) = render_raw("ctx:pct")
+        green, bold, reset = statusline.GREEN, statusline.BOLD, statusline.RESET
+        assert f"{bold}{green}24%{reset}" in line
+
+    def test_bar_only(self):
+        assert plain("ctx:bar") == [f"ctx {_BAR}"]
+
+    def test_bar_keeps_its_colour(self):
+        (line,) = render_raw("ctx:bar")
+        assert f"{statusline.GREEN}{_BAR}{statusline.RESET}" in line
+
+    def test_tokens_only_has_no_brackets(self):
+        assert plain("ctx:tokens") == ["ctx 48k/200k"]
+
+    def test_bar_and_tokens(self):
+        assert plain("ctx:bar,tokens") == [f"ctx {_BAR} (48k/200k)"]
+
+    def test_option_order_does_not_matter(self):
+        assert (
+            plain("ctx:tokens,pct") == plain("ctx:pct,tokens") == ["ctx 24% (48k/200k)"]
+        )
+
+    def test_duplicate_options_are_merged(self):
+        assert plain("ctx:pct,pct") == ["ctx 24%"]
+
+    def test_stray_commas_are_ignored(self):
+        assert plain("ctx:,pct,,") == ["ctx 24%"]
+
+    def test_placeholder_with_any_option(self):
+        assert plain("ctx:pct", {}) == ["ctx (no messages yet)"]
+
+    def test_tokens_only_without_token_count_is_omitted(self):
+        data = {"context_window": {"used_percentage": 50}, "model": {"id": "M"}}
+        assert plain("ctx:tokens model", data) == ["M"]
+
+
+class TestRateLimitOptions:
+    @pytest.mark.parametrize("layout", ["5h", "5h:reset,cap", "5h:cap,reset"])
+    def test_default_is_reset_and_cap(self, layout):
+        assert plain(layout) == ["5h 35% (↻ 2.0h · ⇲ 5.6h)"]
+
+    def test_reset_only(self):
+        assert plain("5h:reset") == ["5h 35% (↻ 2.0h)"]
+
+    def test_cap_only(self):
+        assert plain("7d:cap") == ["7d 70% (⇲ 19.5h)"]
+
+    def test_cap_only_is_dim_bracketed_and_coloured(self):
+        # 35% after 3h: cap in 5.6h, reset in 2.0h -> r = 2.8 -> green
+        (line,) = render_raw("5h:cap")
+        dim, reset, green = statusline.DIM, statusline.RESET, statusline.GREEN
+        assert f"{dim}({reset}{green}⇲ 5.6h{reset}{dim}){reset}" in line
+
+    def test_cap_only_without_estimate_shows_percentage(self):
+        data = {"rate_limits": {"five_hour": {"used_percentage": 35}}}
+        assert plain("5h:cap", data) == ["5h 35%"]
+
+    def test_reset_only_with_reset_in_past(self):
+        data = {"rate_limits": {"seven_day": {"used_percentage": 35, "resets_at": -1}}}
+        assert plain("7d:reset", data) == ["7d 35%"]
+
+
+class TestMainLayoutEnv:
+    FULL = json.dumps(_FULL_DATA).encode()
+
+    @pytest.fixture(autouse=True)
+    def _freeze_time(self, monkeypatch):
+        monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+
+    def test_layout_is_read_from_environment(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "model / 5h:cap")
+        lines = run_lines(monkeypatch, capsys, self.FULL)
+        assert lines == ["Claude Opus 4.7", "5h 35% (⇲ 5.6h)"]
+
+    def test_unset_variable_uses_default(self, monkeypatch, capsys):
+        lines = run_lines(monkeypatch, capsys, self.FULL)
+        assert lines == plain(DEFAULT_LAYOUT)
+
+    def test_blank_variable_uses_default(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "  ")
+        lines = run_lines(monkeypatch, capsys, self.FULL)
+        assert lines == plain(DEFAULT_LAYOUT)
+
+    def test_bad_layout_does_not_crash(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "::: ,, : model:: 5h:,")
+        lines = run_lines(monkeypatch, capsys, b'{"model":{"display_name":"M"}}')
+        assert lines == ["?::: │ ?,, │ ?: │ ?model:: │ ?5h:,"]
+
+    def test_nothing_rendered_prints_nothing(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "cost")
+        out = run_main(monkeypatch, capsys, b'{"model":{"display_name":"M"}}')
+        assert out == ""

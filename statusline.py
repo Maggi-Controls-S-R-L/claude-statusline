@@ -27,11 +27,12 @@ DIM = "\033[2m"
 RED = "\033[31m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
+BLUE = "\033[34m"
 CYAN = "\033[36m"
 MAGENTA = "\033[35m"
 
 BAR_WIDTH = 24
-SEP = f" {DIM}│{RESET} "  # dim vertical-bar separator
+SEP = f" {BLUE}│{RESET} "  # blue vertical-bar separator
 
 # Rate-limit window lengths, matching the "5h" / "7d" labels.
 FIVE_HOUR_SECS = 5 * 3600
@@ -144,8 +145,8 @@ def rate_limit_part(
     rem = reset_in(resets_at, now)
     if not rem:
         return part
-    # Bold countdown like the session duration; ⇲ shares its value's colour.
-    countdown = f"{BOLD}↻ {rem}{RESET}"
+    # Plain countdown like the session duration; ⇲ shares its value's colour.
+    countdown = f"↻ {rem}"
     ttc = time_to_cap(used, resets_at, window_secs, now)
     if ttc is None or resets_at is None:
         return part + f" {DIM}({RESET}{countdown}{DIM}){RESET}"
@@ -219,14 +220,14 @@ def main() -> None:
             size = human_tokens(tokens_used)
             if cw_size:
                 size += f"/{human_tokens(cw_size)}"
-            ctx += f" {DIM}({size}){RESET}"
+            ctx += f" {DIM}({RESET}{size}{DIM}){RESET}"
     else:
         ctx = f"{DIM}ctx (no messages yet){RESET}"
     line1_parts = [ctx]
     if duration_ms is not None:
         with contextlib.suppress(TypeError, ValueError):
             dur = format_duration(float(duration_ms))
-            line1_parts.append(f"{DIM}session{RESET} {BOLD}{dur}{RESET}")
+            line1_parts.append(f"{DIM}session{RESET} {dur}")
     line1_parts.append(f"{CYAN}{BOLD}{model}{RESET}")
     line1 = SEP.join(line1_parts)
 

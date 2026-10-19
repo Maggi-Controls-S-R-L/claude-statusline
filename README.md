@@ -4,13 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg)](https://www.python.org/)
 
-A compact, two-line [status line](https://code.claude.com/docs/en/statusline)
-for Claude Code. Claude Code pipes a JSON status payload to the configured
-command on stdin; this script renders it as:
+A compact [status line](https://code.claude.com/docs/en/statusline) for Claude
+Code. Claude Code pipes a JSON status payload to the configured command on
+stdin; with the default layout this script renders it as:
 
 ```
 ctx ██████░░░░░░░░░░░░░░░░░░ 24% (48k/200k) │ session 3h 12m │ Claude Opus 4.7
-5h 35% (↻ 2.0h · ⇲ 5.6h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34
+5h 35% (↻ 2.0h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34
 ```
 
 ## Features
@@ -19,9 +19,13 @@ ctx ██████░░░░░░░░░░░░░░░░░░ 24%
   compact token counts (`48k/200k`).
 - **Session wall-clock duration** and the **active model** name.
 - **Rate-limit usage** for the rolling 5-hour and 7-day windows, each with the
-  time remaining until it resets (`↻`) and a colour-coded estimate of when the
-  budget runs out at the current pace (`⇲`).
+  time remaining until it resets (`↻`) and, by default on the 7-day window
+  only, a colour-coded estimate of when the budget runs out at the current
+  pace (`⇲`).
 - **API-equivalent cost estimate**.
+- **Configurable layout** — choose the fields, their order and the number of
+  lines with one environment variable (see
+  [Configuring the layout](#configuring-the-layout)).
 - **Graceful degradation** — sections are omitted when their data is absent
   (rate limits only appear for Pro/Max subscribers; the context line shows
   `ctx (no messages yet) │ session 0m │ <model>` before the first turn).
@@ -32,14 +36,95 @@ ctx ██████░░░░░░░░░░░░░░░░░░ 24%
 
 ## What it shows
 
-Fields are grouped by topic:
+With the default layout, fields are grouped by topic:
 
 - **Line 1 — the session:** context-window usage (bar + %, with token counts),
   the session duration, and the active model. The session segment is omitted
   when `cost.total_duration_ms` is absent.
-- **Line 2 — the budget:** rate-limit usage (5h / 7d, with reset countdowns
-  and time-to-cap estimates) and the API-equivalent cost estimate. When none
-  of these are available it reads `(no rate-limit / cost data)`.
+- **Line 2 — the budget:** rate-limit usage (5h with its reset countdown, 7d
+  with its reset countdown and time-to-cap estimate) and the API-equivalent
+  cost estimate. The line is omitted when none of these are available.
+
+## Configuring the layout
+
+The fields, their order and the number of lines are set by the
+`CLAUDE_STATUSLINE_LAYOUT` environment variable. When it is unset or blank,
+the default applies:
+
+```
+ctx session model / 5h:reset 7d cost
+```
+
+Syntax:
+
+- **Fields** are separated by whitespace; the ` │ ` separator is inserted
+  between the fields that render.
+- **`/`** starts a new line, so a layout can have one, two or more lines.
+- **`field:opt,opt`** selects the parts of a composite field; a field without
+  options shows its default parts. The parts always render in the order of the
+  table below, whatever the order of the options.
+
+| Field     | Shows                          | Options                | Default parts  |
+| --------- | ------------------------------ | ---------------------- | -------------- |
+| `ctx`     | context-window usage           | `bar`, `pct`, `tokens` | all            |
+| `session` | session duration               | —                      | —              |
+| `model`   | active model                   | —                      | —              |
+| `5h`      | 5-hour rate-limit usage        | `reset`, `cap`         | `reset`, `cap` |
+| `7d`      | 7-day rate-limit usage         | `reset`, `cap`         | `reset`, `cap` |
+| `cost`    | API-equivalent cost estimate   | —                      | —              |
+
+For `ctx`, `tokens` is shown in brackets after the bar or percentage, and bare
+when it is the only part (`ctx 48k/200k`); `ctx:tokens` is omitted when the
+payload has no token count.
+
+For `5h` / `7d`, `reset` is the countdown to the window reset (`↻`), `cap` the
+time-to-cap estimate (`⇲`); the usage percentage is always shown. The default
+layout picks `5h:reset`: on a window of at most five hours the percentage
+already says most of it, and the average-pace extrapolation is noisy. The
+layout before version 1.4 is one string away: `ctx session model / 5h 7d cost`.
+
+Behaviour:
+
+- Fields without data are omitted together with their separator, and a line
+  with nothing to show is dropped. Before the first message `ctx` reads
+  `ctx (no messages yet)`. If no field of the layout has data, the status line
+  is blank. A non-numeric or non-finite value in the payload (a string, `NaN`,
+  an infinity) counts as missing data.
+- The status line never fails on a bad layout: an unknown field, an unknown
+  option, options on a field that takes none, or an empty option list (`5h:`)
+  render the whole token as a red `?token` in its position, so a typo is
+  visible instead of silently ignored. Field and option names are lowercase.
+- Extra whitespace and empty lines (leading, trailing or repeated `/`) are
+  ignored; a field listed twice is shown twice.
+
+Set the variable in the `env` block of the Claude Code settings, for example
+globally in `~/.claude/settings.json`:
+
+```json
+{
+  "env": { "CLAUDE_STATUSLINE_LAYOUT": "ctx session model / 5h:reset 7d cost" }
+}
+```
+
+Claude Code passes `env` variables to the status line command and picks up
+changes live, without restarting the session. `env` is merged **per key**
+across settings scopes, so a project can override just the layout in its
+`.claude/settings.local.json` and keep every other variable from the global
+settings:
+
+```json
+{
+  "env": { "CLAUDE_STATUSLINE_LAYOUT": "ctx model / 5h:reset,cap 7d" }
+}
+```
+
+The override is independent of the `statusLine` block: it needs only that
+key, and applies whichever command `statusLine` runs.
+
+Adding or changing the variable takes effect live, but removing it does not:
+the running session keeps the last value until Claude Code is restarted. To
+go back to the default without a restart, set it to an empty string
+(`"CLAUDE_STATUSLINE_LAYOUT": ""`) instead of deleting the key.
 
 ## About the time-to-cap estimate
 

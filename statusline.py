@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # ── ANSI codes ──────────────────────────────────────────────────────────────
 RESET = "\033[0m"

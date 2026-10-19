@@ -116,6 +116,11 @@ settings:
 The override is independent of the `statusLine` block: it needs only that
 key, and applies whichever command `statusLine` runs.
 
+Adding or changing the variable takes effect live, but removing it does not:
+the running session keeps the last value until Claude Code is restarted. To
+go back to the default without a restart, set it to an empty string
+(`"CLAUDE_STATUSLINE_LAYOUT": ""`) instead of deleting the key.
+
 ## About the time-to-cap estimate
 
 `⇲` answers *"at this pace, when do I hit the limit?"* for each rate-limit

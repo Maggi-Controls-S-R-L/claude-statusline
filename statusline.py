@@ -19,6 +19,7 @@ subscriber the rate-limit percentages are the meaningful budget signal.
 
 import contextlib
 import json
+import math
 import os
 import sys
 import time
@@ -215,22 +216,27 @@ class Status:
 
 
 def _to_float(value: Any) -> float | None:
-    """float(value), or None when it is missing or not a number."""
+    """float(value), or None when it is missing, not a number or not finite.
+
+    The payload is not trusted: a string, NaN or an infinity must not crash
+    the status line, so such a value counts as "no data".
+    """
     if value is None:
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def parse_status(data: dict[str, Any]) -> Status:
     """Extract the rendered fields from the JSON payload Claude Code sends."""
     # ── Context window ───────────────────────────────────────────────────────
     cw = data.get("context_window", {}) or {}
-    tokens_used = cw.get("total_input_tokens")
-    cw_size = cw.get("context_window_size")
-    used_pct = cw.get("used_percentage")
+    tokens_used = _to_float(cw.get("total_input_tokens"))
+    cw_size = _to_float(cw.get("context_window_size"))
+    used_pct = _to_float(cw.get("used_percentage"))
     if used_pct is None and tokens_used is not None and cw_size:
         used_pct = tokens_used / cw_size * 100.0
 
@@ -251,10 +257,10 @@ def parse_status(data: dict[str, Any]) -> Status:
         tokens_used=tokens_used,
         cw_size=cw_size,
         model=model,
-        five_h=five_h.get("used_percentage"),
-        five_h_reset=five_h.get("resets_at"),
-        seven_d=seven_d.get("used_percentage"),
-        seven_d_reset=seven_d.get("resets_at"),
+        five_h=_to_float(five_h.get("used_percentage")),
+        five_h_reset=_to_float(five_h.get("resets_at")),
+        seven_d=_to_float(seven_d.get("used_percentage")),
+        seven_d_reset=_to_float(seven_d.get("resets_at")),
         cost_usd=_to_float(cost.get("total_cost_usd")),
         duration_ms=_to_float(cost.get("total_duration_ms")),
     )
@@ -320,19 +326,31 @@ def render_field(token: str, status: Status, now: float) -> str | None:
     if name == "model":
         return f"{CYAN}{BOLD}{status.model}{RESET}"
     if name in ("5h", "7d"):
-        used, resets_at, window = {
-            "5h": (status.five_h, status.five_h_reset, FIVE_HOUR_SECS),
-            "7d": (status.seven_d, status.seven_d_reset, SEVEN_DAY_SECS),
-        }[name]
+        if name == "5h":
+            used, resets_at, window = status.five_h, status.five_h_reset, FIVE_HOUR_SECS
+        else:
+            used, resets_at, window = (
+                status.seven_d,
+                status.seven_d_reset,
+                SEVEN_DAY_SECS,
+            )
         if used is None:
             return None
         return rate_limit_part(
-            name, used, resets_at, window, now, "reset" in opts, "cap" in opts
+            name,
+            used,
+            resets_at,
+            window,
+            now,
+            reset="reset" in opts,
+            cap="cap" in opts,
         )
-    # cost
-    if status.cost_usd is None:
-        return None
-    return f"{DIM}API est.{RESET} {MAGENTA}${status.cost_usd:,.2f}{RESET}"
+    if name == "cost":
+        if status.cost_usd is None:
+            return None
+        return f"{DIM}API est.{RESET} {MAGENTA}${status.cost_usd:,.2f}{RESET}"
+    # Every FIELDS entry needs a branch above; fail loudly in the tests.
+    raise AssertionError(f"no renderer for field {name!r}")
 
 
 def render(status: Status, layout: str, now: float) -> list[str]:

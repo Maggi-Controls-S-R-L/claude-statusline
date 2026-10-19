@@ -814,3 +814,86 @@ class TestMainLayoutEnv:
         monkeypatch.setenv(LAYOUT_ENV, "cost")
         out = run_main(monkeypatch, capsys, b'{"model":{"display_name":"M"}}')
         assert out == ""
+
+
+# ── Robustness to odd payload values (review of #13) ──────────────────────
+class TestPayloadValues:
+    FULL = "ctx session model / 5h 7d cost"
+
+    def test_nan_duration_omits_session(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "session model")
+        payload = b'{"cost":{"total_duration_ms":NaN},"model":{"display_name":"M"}}'
+        assert run_lines(monkeypatch, capsys, payload) == ["M"]
+
+    def test_nan_string_duration_omits_session(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "session model")
+        payload = b'{"cost":{"total_duration_ms":"nan"},"model":{"display_name":"M"}}'
+        assert run_lines(monkeypatch, capsys, payload) == ["M"]
+
+    @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_cost_is_omitted(self, value):
+        assert plain("cost model", {"cost": {"total_cost_usd": value}}) == [
+            "unknown model"
+        ]
+
+    def test_non_finite_json_cost_is_omitted(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, "cost model")
+        payload = b'{"cost":{"total_cost_usd":Infinity},"model":{"display_name":"M"}}'
+        assert run_lines(monkeypatch, capsys, payload) == ["M"]
+
+    def test_numeric_string_percentage_is_used(self):
+        data = {"rate_limits": {"five_hour": {"used_percentage": "35"}}}
+        assert plain("5h", data) == ["5h 35%"]
+
+    def test_non_numeric_percentage_omits_window(self):
+        data = {"rate_limits": {"five_hour": {"used_percentage": "lots"}}}
+        assert plain("5h model", data) == ["unknown model"]
+
+    def test_nan_percentage_omits_window(self):
+        data = {"rate_limits": {"seven_day": {"used_percentage": float("nan")}}}
+        assert plain("7d model", data) == ["unknown model"]
+
+    def test_non_numeric_reset_shows_no_countdown(self):
+        data = {"rate_limits": {"five_hour": {"used_percentage": 35, "resets_at": "x"}}}
+        assert plain("5h", data) == ["5h 35%"]
+
+    def test_nan_context_percentage_is_no_messages_yet(self):
+        data = {"context_window": {"used_percentage": float("nan")}}
+        assert plain("ctx", data) == ["ctx (no messages yet)"]
+
+    def test_non_numeric_context_percentage_is_no_messages_yet(self):
+        data = {"context_window": {"used_percentage": "half"}}
+        assert plain("ctx", data) == ["ctx (no messages yet)"]
+
+    def test_numeric_string_tokens_are_used(self):
+        data = {
+            "context_window": {
+                "total_input_tokens": "48000",
+                "context_window_size": "200000",
+            }
+        }
+        assert plain("ctx:pct,tokens", data) == ["ctx 24% (48k/200k)"]
+
+    def test_non_numeric_tokens_are_ignored(self):
+        data = {"context_window": {"used_percentage": 24, "total_input_tokens": "?"}}
+        assert plain("ctx:pct,tokens", data) == ["ctx 24%"]
+
+    def test_odd_values_everywhere_do_not_crash(self, monkeypatch, capsys):
+        monkeypatch.setenv(LAYOUT_ENV, self.FULL)
+        payload = (
+            b'{"context_window":{"total_input_tokens":"a","context_window_size":NaN,'
+            b'"used_percentage":"b"},"model":{"display_name":"M"},'
+            b'"rate_limits":{"five_hour":{"used_percentage":NaN,"resets_at":"c"},'
+            b'"seven_day":{"used_percentage":Infinity,"resets_at":NaN}},'
+            b'"cost":{"total_cost_usd":"d","total_duration_ms":-Infinity}}'
+        )
+        assert run_lines(monkeypatch, capsys, payload) == ["ctx (no messages yet) │ M"]
+
+
+class TestRenderFieldDispatch:
+    def test_field_without_renderer_is_not_shown_as_cost(self, monkeypatch):
+        # A field added to FIELDS but not to render_field must fail loudly in
+        # the tests instead of silently rendering as another field.
+        monkeypatch.setitem(statusline.FIELDS, "newfield", ())
+        with pytest.raises(AssertionError):
+            statusline.render_field("newfield", parse_status(_FULL_DATA), 0.0)

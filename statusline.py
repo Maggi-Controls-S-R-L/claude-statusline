@@ -2,8 +2,8 @@
 """
 Claude Code status line — two compact lines.
 
-Line 1:  context-window usage (bar + %)   ·   session duration   ·   model name
-Line 2:  rate-limit usage (5h / 7d)        ·   estimated API cost
+Line 1:  context-window usage (bar + %)   │   session duration   │   model name
+Line 2:  rate-limit usage (5h / 7d)        │   estimated API cost
          each window: "5h 35% (↻ 2.0h · ⇲ 5.6h)" — reset countdown and the
          estimated time until the budget hits 100% at the current pace
 
@@ -31,7 +31,7 @@ CYAN = "\033[36m"
 MAGENTA = "\033[35m"
 
 BAR_WIDTH = 24
-SEP = f"  {DIM}·{RESET}  "  # dim middle-dot separator
+SEP = f" {DIM}│{RESET} "  # dim vertical-bar separator
 
 # Rate-limit window lengths, matching the "5h" / "7d" labels.
 FIVE_HOUR_SECS = 5 * 3600
@@ -144,12 +144,14 @@ def rate_limit_part(
     rem = reset_in(resets_at, now)
     if not rem:
         return part
+    # Bold countdown like the session duration; ⇲ shares its value's colour.
+    countdown = f"{BOLD}↻ {rem}{RESET}"
     ttc = time_to_cap(used, resets_at, window_secs, now)
     if ttc is None or resets_at is None:
-        return part + f" {DIM}(↻ {rem}){RESET}"
+        return part + f" {DIM}({RESET}{countdown}{DIM}){RESET}"
     c = color_for_ratio(ttc / (resets_at - now))
-    cap = f"{c}{format_eta(ttc)}{RESET}"
-    return part + f" {DIM}(↻ {rem} · ⇲ {RESET}{cap}{DIM}){RESET}"
+    cap = f"{c}⇲ {format_eta(ttc)}{RESET}"
+    return part + f" {DIM}({RESET}{countdown}{DIM} · {RESET}{cap}{DIM}){RESET}"
 
 
 def human_tokens(n: float) -> str:

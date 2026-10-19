@@ -9,8 +9,8 @@ for Claude Code. Claude Code pipes a JSON status payload to the configured
 command on stdin; this script renders it as:
 
 ```
-ctx ██████░░░░░░░░░░░░░░░░░░ 24% (48k/200k)  ·  session 3h 12m  ·  Claude Opus 4.7
-5h 35% (↻ 2.0h · ⇲ 5.6h)  ·  7d 70% (↻ 5.1d · ⇲ 19.5h)  ·  API est. $12.34
+ctx ██████░░░░░░░░░░░░░░░░░░ 24% (48k/200k) │ session 3h 12m │ Claude Opus 4.7
+5h 35% (↻ 2.0h · ⇲ 5.6h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34
 ```
 
 ## Features
@@ -24,7 +24,7 @@ ctx ██████░░░░░░░░░░░░░░░░░░ 24%
 - **API-equivalent cost estimate**.
 - **Graceful degradation** — sections are omitted when their data is absent
   (rate limits only appear for Pro/Max subscribers; the context line shows
-  `ctx (no messages yet)  ·  session 0m  ·  <model>` before the first turn).
+  `ctx (no messages yet) │ session 0m │ <model>` before the first turn).
 - **UTF-8 / BOM-safe** — forces UTF-8 output (the bar uses block characters the
   default Windows console encoding cannot encode) and tolerates a leading BOM
   on stdin.

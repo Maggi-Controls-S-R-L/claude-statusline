@@ -355,10 +355,10 @@ class TestSessionPlacement:
         line1, line2 = run_lines(monkeypatch, capsys, self.FULL)
         assert line1 == (
             "ctx " + "█" * 6 + "░" * 18 + " 24% (48k/200k)"
-            "  ·  session 3h 12m  ·  Claude Opus 4.7"
+            " │ session 3h 12m │ Claude Opus 4.7"
         )
         assert line2 == (
-            "5h 35% (↻ 2.0h · ⇲ 5.6h)  ·  7d 70% (↻ 5.1d · ⇲ 19.5h)  ·  API est. $12.34"
+            "5h 35% (↻ 2.0h · ⇲ 5.6h) │ 7d 70% (↻ 5.1d · ⇲ 19.5h) │ API est. $12.34"
         )
 
     def test_session_sits_between_context_and_model(self, monkeypatch, capsys):
@@ -372,42 +372,43 @@ class TestSessionPlacement:
         assert "session" not in line2
         assert "3h 12m" not in line2
 
-    def test_session_keeps_dim_label_and_bold_value(self, monkeypatch, capsys):
+    def test_session_keeps_dim_label_and_plain_value(self, monkeypatch, capsys):
         payload = (
             b'{"cost":{"total_duration_ms":11520000},"model":{"display_name":"M"}}'
         )
         out = run_main(monkeypatch, capsys, payload)
         line1 = out.splitlines()[0]
-        dim, bold, reset = statusline.DIM, statusline.BOLD, statusline.RESET
-        assert f"{dim}session{reset} {bold}3h 12m{reset}" in line1
+        dim, reset = statusline.DIM, statusline.RESET
+        assert f"{dim}session{reset} 3h 12m" in line1
+        assert statusline.BOLD not in line1.split("session")[1].split("│")[0]
 
     def test_pre_first_turn(self, monkeypatch, capsys):
         # Before the first turn Claude Code already sends total_duration_ms.
         payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":0}}'
         line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet)  ·  session 0m  ·  M"
+        assert line1 == "ctx (no messages yet) │ session 0m │ M"
         assert line2 == "(no rate-limit / cost data)"
 
     def test_missing_duration_omits_segment(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"},"cost":{"total_cost_usd":1.5}}'
         line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet)  ·  M"
+        assert line1 == "ctx (no messages yet) │ M"
         assert line2 == "API est. $1.50"
 
     def test_missing_cost_object_omits_segment(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"}}'
         line1, _ = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet)  ·  M"
+        assert line1 == "ctx (no messages yet) │ M"
 
     def test_null_duration_omits_segment(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":null}}'
         line1, _ = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet)  ·  M"
+        assert line1 == "ctx (no messages yet) │ M"
 
     def test_non_numeric_duration_is_ignored(self, monkeypatch, capsys):
         payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":"oops"}}'
         line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1 == "ctx (no messages yet)  ·  M"
+        assert line1 == "ctx (no messages yet) │ M"
         assert "session" not in line2
 
     def test_line_2_fallback_when_only_duration_present(self, monkeypatch, capsys):
@@ -416,7 +417,7 @@ class TestSessionPlacement:
             b'"model":{"display_name":"M"},"cost":{"total_duration_ms":300000}}'
         )
         line1, line2 = run_lines(monkeypatch, capsys, payload)
-        assert line1.endswith("50%  ·  session 5m  ·  M")
+        assert line1.endswith("50% │ session 5m │ M")
         assert line2 == "(no rate-limit / cost data)"
 
 
@@ -448,15 +449,18 @@ class TestTimeToCapField:
         _, line2 = run_lines(monkeypatch, capsys, _rl_payload("five_hour", 80, 7200))
         assert line2 == "5h 80% (↻ 2.0h · ⇲ 45m)"
 
-    def test_separator_is_dim(self, monkeypatch, capsys):
+    def test_brackets_and_separator_are_dim(self, monkeypatch, capsys):
         out = run_main(monkeypatch, capsys, _rl_payload("five_hour", 35, 7200))
         dim, reset = statusline.DIM, statusline.RESET
-        assert f"{dim}(↻ 2.0h · ⇲ {reset}" in out
+        assert f"{dim}({reset}" in out
+        assert f"{dim} · {reset}" in out
+        assert f"{dim}){reset}" in out
 
     def _value_colour(self, monkeypatch, capsys, used, resets_at, text):
+        # The ⇲ symbol shares the colour of its value.
         out = run_main(monkeypatch, capsys, _rl_payload("five_hour", used, resets_at))
         for colour in (statusline.RED, statusline.YELLOW, statusline.GREEN):
-            if f"{colour}{text}{statusline.RESET}" in out:
+            if f"{colour}⇲ {text}{statusline.RESET}" in out:
                 return colour
         raise AssertionError(f"{text!r} not found coloured in {out!r}")
 
@@ -531,3 +535,46 @@ class TestVersionFlag:
         monkeypatch.setattr(sys, "argv", ["claude-statusline", "-V"])
         statusline.main()
         assert statusline.__version__ in capsys.readouterr().out
+
+
+# ── main() — readability of times and separators (issue #10) ──────────────
+class TestReadability:
+    @pytest.fixture(autouse=True)
+    def _freeze_time(self, monkeypatch):
+        monkeypatch.setattr(statusline.time, "time", lambda: 0.0)
+
+    def test_reset_countdown_is_plain_white(self, monkeypatch, capsys):
+        out = run_main(monkeypatch, capsys, _rl_payload("five_hour", 35, 7200))
+        dim, reset = statusline.DIM, statusline.RESET
+        assert f"{dim}({reset}↻ 2.0h{dim} · {reset}" in out
+
+    def test_reset_countdown_is_plain_without_time_to_cap(self, monkeypatch, capsys):
+        out = run_main(monkeypatch, capsys, _rl_payload("five_hour", 0, 7200))
+        dim, reset = statusline.DIM, statusline.RESET
+        assert f"{dim}({reset}↻ 2.0h{dim}){reset}" in out
+
+    def test_context_size_is_plain_white(self, monkeypatch, capsys):
+        payload = (
+            b'{"context_window":{"total_input_tokens":48000,'
+            b'"context_window_size":200000},"model":{"display_name":"M"}}'
+        )
+        out = run_main(monkeypatch, capsys, payload)
+        dim, reset = statusline.DIM, statusline.RESET
+        assert f"{dim}({reset}48k/200k{dim}){reset}" in out
+
+    def test_no_bold_outside_context_percentage_and_model(self, monkeypatch, capsys):
+        payload = (
+            b'{"context_window":{"total_input_tokens":48000,'
+            b'"context_window_size":200000},"model":{"display_name":"M"},'
+            b'"rate_limits":{"five_hour":{"used_percentage":35,"resets_at":7200}},'
+            b'"cost":{"total_cost_usd":1.5,"total_duration_ms":300000}}'
+        )
+        out = run_main(monkeypatch, capsys, payload)
+        assert out.count(statusline.BOLD) == 2
+
+    def test_field_separator_is_blue_vertical_bar(self, monkeypatch, capsys):
+        payload = b'{"model":{"display_name":"M"},"cost":{"total_duration_ms":0}}'
+        out = run_main(monkeypatch, capsys, payload)
+        blue, reset = statusline.BLUE, statusline.RESET
+        assert f" {blue}│{reset} " in out.splitlines()[0]
+        assert "·" not in out
